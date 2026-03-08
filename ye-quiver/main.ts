@@ -1,4 +1,4 @@
-import { App, Plugin, PluginManifest } from "obsidian";
+import { App, Plugin, PluginManifest, PluginSettingTab, Setting } from "obsidian";
 import { EMBEDDED_CLI_SOURCE, EMBEDDED_QUIVER_STY } from "./embedded-assets.generated";
 
 declare const require: (id: string) => any;
@@ -6,6 +6,30 @@ declare const require: (id: string) => any;
 const TEST_TIKZ = "\\begin{tikzcd}\n\tA \\arrow[r] & B\n\\end{tikzcd}";
 
 const PLUGIN_ID = "ye-quiver";
+
+const MANIFEST_FILENAME = "cache-manifest.json";
+
+export interface YeQuiverSettings {
+  cacheDir: string;
+  maxCacheSize: number;
+  preGenerateOtherTheme: boolean;
+}
+
+function getDefaultCacheDir(): string {
+  try {
+    const path = require("path");
+    const os = require("os");
+    return path.join(os.tmpdir(), "ye-quiver-cache");
+  } catch {
+    return "";
+  }
+}
+
+const DEFAULT_SETTINGS: YeQuiverSettings = {
+  cacheDir: getDefaultCacheDir(),
+  maxCacheSize: 1000,
+  preGenerateOtherTheme: true,
+};
 const NODE_MODULES_AVAILABLE: boolean = (() => {
   try {
     require("child_process");
@@ -233,9 +257,115 @@ function setCached(tex: string, dark: boolean, base64: string): void {
   }
 }
 
-async function tikzToPngBase64(tex: string, dark: boolean): Promise<string> {
-  const cached = getCached(tex, dark);
-  if (cached != null) return cached;
+/** 磁盘缓存：根据 (tex, dark) 生成唯一文件名（不含扩展名）。 */
+function diskCacheFileKey(tex: string, dark: boolean): string {
+  try {
+    const crypto = require("crypto");
+    const h = crypto.createHash("sha256").update(tex, "utf8").digest("hex").slice(0, 24);
+    return dark ? `${h}_d` : `${h}_l`;
+  } catch {
+    return (dark ? "d_" : "l_") + String(Math.abs((tex + tex.length).split("").reduce((a, c) => (a + c.charCodeAt(0)) | 0, 0)));
+  }
+}
+
+type ManifestData = Record<string, number>;
+
+function loadDiskManifest(cacheDir: string): ManifestData {
+  const fs = require("fs");
+  const path = require("path");
+  const p = path.join(cacheDir, MANIFEST_FILENAME);
+  if (!fs.existsSync(p)) return {};
+  try {
+    const data = JSON.parse(fs.readFileSync(p, "utf8"));
+    return typeof data === "object" && data !== null ? data : {};
+  } catch {
+    return {};
+  }
+}
+
+function saveDiskManifest(cacheDir: string, manifest: ManifestData): void {
+  const fs = require("fs");
+  const path = require("path");
+  const p = path.join(cacheDir, MANIFEST_FILENAME);
+  fs.writeFileSync(p, JSON.stringify(manifest), "utf8");
+}
+
+function getDiskCached(tex: string, dark: boolean, cacheDir: string): string | null {
+  if (!cacheDir) return null;
+  const fs = require("fs");
+  const path = require("path");
+  const key = diskCacheFileKey(tex, dark);
+  const filePath = path.join(cacheDir, key + ".png");
+  if (!fs.existsSync(filePath)) return null;
+  try {
+    const buf = fs.readFileSync(filePath);
+    return buf.toString("base64");
+  } catch {
+    return null;
+  }
+}
+
+function setDiskCache(tex: string, dark: boolean, base64: string, cacheDir: string, maxSize: number): void {
+  if (!cacheDir || maxSize < 1) return;
+  const fs = require("fs");
+  const path = require("path");
+  if (!fs.existsSync(cacheDir)) fs.mkdirSync(cacheDir, { recursive: true });
+  const key = diskCacheFileKey(tex, dark);
+  const filePath = path.join(cacheDir, key + ".png");
+  const buf = Buffer.from(base64, "base64");
+  fs.writeFileSync(filePath, buf);
+  const manifest = loadDiskManifest(cacheDir);
+  const now = Date.now();
+  manifest[key] = now;
+  const entries = Object.entries(manifest).sort((a, b) => a[1] - b[1]);
+  while (entries.length > maxSize) {
+    const [evictKey] = entries.shift()!;
+    const evictPath = path.join(cacheDir, evictKey + ".png");
+    try {
+      if (fs.existsSync(evictPath)) fs.unlinkSync(evictPath);
+    } catch (_) {}
+    delete manifest[evictKey];
+  }
+  saveDiskManifest(cacheDir, manifest);
+}
+
+function getDiskCacheCount(cacheDir: string): number {
+  if (!cacheDir) return 0;
+  const manifest = loadDiskManifest(cacheDir);
+  return Object.keys(manifest).length;
+}
+
+function clearDiskCache(cacheDir: string): number {
+  if (!cacheDir) return 0;
+  const fs = require("fs");
+  const path = require("path");
+  let n = 0;
+  try {
+    if (!fs.existsSync(cacheDir)) return 0;
+    const names = fs.readdirSync(cacheDir);
+    for (const name of names) {
+      if (name.endsWith(".png")) {
+        try {
+          fs.unlinkSync(path.join(cacheDir, name));
+          n++;
+        } catch (_) {}
+      }
+    }
+    if (fs.existsSync(path.join(cacheDir, MANIFEST_FILENAME))) {
+      fs.unlinkSync(path.join(cacheDir, MANIFEST_FILENAME));
+    }
+  } catch (_) {}
+  return n;
+}
+
+async function tikzToPngBase64(tex: string, dark: boolean, settings: YeQuiverSettings): Promise<string> {
+  const mem = getCached(tex, dark);
+  if (mem != null) return mem;
+  const disk = getDiskCached(tex, dark, settings.cacheDir);
+  if (disk != null) {
+    setCached(tex, dark, disk);
+    return disk;
+  }
 
   const path = require("path");
   const fs = require("fs");
@@ -284,15 +414,102 @@ async function tikzToPngBase64(tex: string, dark: boolean): Promise<string> {
   });
 
   setCached(tex, dark, result);
+  setDiskCache(tex, dark, result, settings.cacheDir, settings.maxCacheSize);
   return result;
 }
 
+class YeQuiverSettingTab extends PluginSettingTab {
+  constructor(app: App, private plugin: YeQuiverPlugin) {
+    super(app, plugin);
+  }
+
+  display(): void {
+    const { containerEl } = this;
+    containerEl.empty();
+    const s = this.plugin.settings;
+
+    new Setting(containerEl)
+      .setName("缓存目录")
+      .setDesc("渲染结果 PNG 的存储路径，留空则禁用磁盘缓存。默认：系统临时目录下的 ye-quiver-cache。")
+      .addText((text) =>
+        text
+          .setPlaceholder(getDefaultCacheDir())
+          .setValue(s.cacheDir || "")
+          .onChange((v) => {
+            s.cacheDir = v.trim();
+            this.plugin.saveData(s);
+          })
+      );
+
+    new Setting(containerEl)
+      .setName("最大缓存数量")
+      .setDesc("最多保留的图片数量（张），超出时按最久未使用删除。默认 1000。")
+      .addText((text) =>
+        text
+          .setPlaceholder("1000")
+          .setValue(String(s.maxCacheSize))
+          .onChange((v) => {
+            const n = parseInt(v, 10);
+            if (!isNaN(n) && n >= 0) {
+              s.maxCacheSize = Math.min(10000, Math.max(0, n));
+              this.plugin.saveData(s);
+            }
+          })
+      );
+
+    new Setting(containerEl)
+      .setName("预生成另一主题")
+      .setDesc("渲染当前主题后，在后台再渲染另一主题并写入缓存，切换深/浅色时更快。")
+      .addToggle((t) =>
+        t.setValue(s.preGenerateOtherTheme).onChange((v) => {
+          s.preGenerateOtherTheme = v;
+          this.plugin.saveData(s);
+        })
+      );
+
+    const countSetting = new Setting(containerEl)
+      .setName("当前缓存")
+      .setDesc("");
+    const countDesc = countSetting.descEl;
+    const updateCount = () => {
+      const n = getDiskCacheCount(s.cacheDir);
+      countDesc.setText(`${n} 张`);
+    };
+    updateCount();
+
+    new Setting(containerEl)
+      .setName("清理缓存")
+      .setDesc("删除缓存目录下所有已缓存的图片。")
+      .addButton((btn) =>
+        btn.setButtonText("清理").onClick(() => {
+          clearDiskCache(s.cacheDir);
+          updateCount();
+        })
+      );
+  }
+}
+
 export default class YeQuiverPlugin extends Plugin {
+  settings: YeQuiverSettings;
+
   constructor(app: App, manifest: PluginManifest) {
     super(app, manifest);
+    this.settings = { ...DEFAULT_SETTINGS };
+  }
+
+  async loadSettings(): Promise<void> {
+    const data = await this.loadData();
+    if (data) this.settings = { ...DEFAULT_SETTINGS, ...data };
+    await this.saveData(this.settings);
   }
 
   onload() {
+    this.loadSettings().then(() => {
+      this.onloadWithSettings();
+    });
+  }
+
+  onloadWithSettings(): void {
     const pluginDir = getPluginDir(this.app, this.manifest);
     if (!pluginDir) {
       console.warn("Ye Quiver: could not resolve plugin directory");
@@ -308,13 +525,16 @@ export default class YeQuiverPlugin extends Plugin {
       this.addStyleSheet(stylesPath);
     }
 
+    this.addSettingTab(new YeQuiverSettingTab(this.app, this));
+
+    const plugin = this;
     const renderOne = async (container: HTMLElement, source: string): Promise<void> => {
       while (container.firstChild) container.removeChild(container.firstChild);
       const { tex, style: displayStyle } = parseDisplayOptions(source);
       const dark = isDarkMode();
       const loading = container.createDiv({ cls: "ye-quiver-loading", text: "Rendering TikZ…" });
       try {
-        const base64 = await tikzToPngBase64(tex, dark);
+        const base64 = await tikzToPngBase64(tex, dark, plugin.settings);
         loading.remove();
         const img = container.createEl("img", {
           attr: {
@@ -326,6 +546,9 @@ export default class YeQuiverPlugin extends Plugin {
         if (Object.keys(displayStyle).length > 0) {
           Object.assign(img.style, displayStyle);
           if (displayStyle.transform) img.style.transformOrigin = "top left";
+        }
+        if (plugin.settings.preGenerateOtherTheme) {
+          void tikzToPngBase64(tex, !dark, plugin.settings).catch(() => {});
         }
       } catch (err: any) {
         loading.remove();
@@ -394,7 +617,7 @@ export default class YeQuiverPlugin extends Plugin {
           const tikz = params.tikz && params.tikz.trim() ? params.tikz.trim() : TEST_TIKZ;
           const dark = params.dark === "true" || params.dark === "1";
           try {
-            await tikzToPngBase64(tikz, dark);
+            await tikzToPngBase64(tikz, dark, plugin.settings);
             return "OK";
           } catch (err: any) {
             return "FAIL: " + (err?.message || String(err));

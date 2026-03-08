@@ -32,6 +32,21 @@ var EMBEDDED_QUIVER_STY = "% *** quiver ***\n% A package for drawing commutative
 // main.ts
 var TEST_TIKZ = "\\begin{tikzcd}\n	A \\arrow[r] & B\n\\end{tikzcd}";
 var PLUGIN_ID = "ye-quiver";
+var MANIFEST_FILENAME = "cache-manifest.json";
+function getDefaultCacheDir() {
+  try {
+    const path = require("path");
+    const os = require("os");
+    return path.join(os.tmpdir(), "ye-quiver-cache");
+  } catch {
+    return "";
+  }
+}
+var DEFAULT_SETTINGS = {
+  cacheDir: getDefaultCacheDir(),
+  maxCacheSize: 1e3,
+  preGenerateOtherTheme: true
+};
 var NODE_MODULES_AVAILABLE = (() => {
   try {
     require("child_process");
@@ -243,9 +258,108 @@ function setCached(tex, dark, base64) {
     renderCache.delete(evict);
   }
 }
-async function tikzToPngBase64(tex, dark) {
-  const cached = getCached(tex, dark);
-  if (cached != null) return cached;
+function diskCacheFileKey(tex, dark) {
+  try {
+    const crypto = require("crypto");
+    const h = crypto.createHash("sha256").update(tex, "utf8").digest("hex").slice(0, 24);
+    return dark ? `${h}_d` : `${h}_l`;
+  } catch {
+    return (dark ? "d_" : "l_") + String(Math.abs((tex + tex.length).split("").reduce((a, c) => a + c.charCodeAt(0) | 0, 0)));
+  }
+}
+function loadDiskManifest(cacheDir) {
+  const fs = require("fs");
+  const path = require("path");
+  const p = path.join(cacheDir, MANIFEST_FILENAME);
+  if (!fs.existsSync(p)) return {};
+  try {
+    const data = JSON.parse(fs.readFileSync(p, "utf8"));
+    return typeof data === "object" && data !== null ? data : {};
+  } catch {
+    return {};
+  }
+}
+function saveDiskManifest(cacheDir, manifest) {
+  const fs = require("fs");
+  const path = require("path");
+  const p = path.join(cacheDir, MANIFEST_FILENAME);
+  fs.writeFileSync(p, JSON.stringify(manifest), "utf8");
+}
+function getDiskCached(tex, dark, cacheDir) {
+  if (!cacheDir) return null;
+  const fs = require("fs");
+  const path = require("path");
+  const key = diskCacheFileKey(tex, dark);
+  const filePath = path.join(cacheDir, key + ".png");
+  if (!fs.existsSync(filePath)) return null;
+  try {
+    const buf = fs.readFileSync(filePath);
+    return buf.toString("base64");
+  } catch {
+    return null;
+  }
+}
+function setDiskCache(tex, dark, base64, cacheDir, maxSize) {
+  if (!cacheDir || maxSize < 1) return;
+  const fs = require("fs");
+  const path = require("path");
+  if (!fs.existsSync(cacheDir)) fs.mkdirSync(cacheDir, { recursive: true });
+  const key = diskCacheFileKey(tex, dark);
+  const filePath = path.join(cacheDir, key + ".png");
+  const buf = Buffer.from(base64, "base64");
+  fs.writeFileSync(filePath, buf);
+  const manifest = loadDiskManifest(cacheDir);
+  const now = Date.now();
+  manifest[key] = now;
+  const entries = Object.entries(manifest).sort((a, b) => a[1] - b[1]);
+  while (entries.length > maxSize) {
+    const [evictKey] = entries.shift();
+    const evictPath = path.join(cacheDir, evictKey + ".png");
+    try {
+      if (fs.existsSync(evictPath)) fs.unlinkSync(evictPath);
+    } catch (_) {
+    }
+    delete manifest[evictKey];
+  }
+  saveDiskManifest(cacheDir, manifest);
+}
+function getDiskCacheCount(cacheDir) {
+  if (!cacheDir) return 0;
+  const manifest = loadDiskManifest(cacheDir);
+  return Object.keys(manifest).length;
+}
+function clearDiskCache(cacheDir) {
+  if (!cacheDir) return 0;
+  const fs = require("fs");
+  const path = require("path");
+  let n = 0;
+  try {
+    if (!fs.existsSync(cacheDir)) return 0;
+    const names = fs.readdirSync(cacheDir);
+    for (const name of names) {
+      if (name.endsWith(".png")) {
+        try {
+          fs.unlinkSync(path.join(cacheDir, name));
+          n++;
+        } catch (_) {
+        }
+      }
+    }
+    if (fs.existsSync(path.join(cacheDir, MANIFEST_FILENAME))) {
+      fs.unlinkSync(path.join(cacheDir, MANIFEST_FILENAME));
+    }
+  } catch (_) {
+  }
+  return n;
+}
+async function tikzToPngBase64(tex, dark, settings) {
+  const mem = getCached(tex, dark);
+  if (mem != null) return mem;
+  const disk = getDiskCached(tex, dark, settings.cacheDir);
+  if (disk != null) {
+    setCached(tex, dark, disk);
+    return disk;
+  }
   const path = require("path");
   const fs = require("fs");
   const { spawn } = require("child_process");
@@ -283,13 +397,70 @@ async function tikzToPngBase64(tex, dark) {
     proc.stdin?.end(tex, "utf8");
   });
   setCached(tex, dark, result);
+  setDiskCache(tex, dark, result, settings.cacheDir, settings.maxCacheSize);
   return result;
 }
+var YeQuiverSettingTab = class extends import_obsidian.PluginSettingTab {
+  constructor(app, plugin) {
+    super(app, plugin);
+    this.plugin = plugin;
+  }
+  display() {
+    const { containerEl } = this;
+    containerEl.empty();
+    const s = this.plugin.settings;
+    new import_obsidian.Setting(containerEl).setName("\u7F13\u5B58\u76EE\u5F55").setDesc("\u6E32\u67D3\u7ED3\u679C PNG \u7684\u5B58\u50A8\u8DEF\u5F84\uFF0C\u7559\u7A7A\u5219\u7981\u7528\u78C1\u76D8\u7F13\u5B58\u3002\u9ED8\u8BA4\uFF1A\u7CFB\u7EDF\u4E34\u65F6\u76EE\u5F55\u4E0B\u7684 ye-quiver-cache\u3002").addText(
+      (text) => text.setPlaceholder(getDefaultCacheDir()).setValue(s.cacheDir || "").onChange((v) => {
+        s.cacheDir = v.trim();
+        this.plugin.saveData(s);
+      })
+    );
+    new import_obsidian.Setting(containerEl).setName("\u6700\u5927\u7F13\u5B58\u6570\u91CF").setDesc("\u6700\u591A\u4FDD\u7559\u7684\u56FE\u7247\u6570\u91CF\uFF08\u5F20\uFF09\uFF0C\u8D85\u51FA\u65F6\u6309\u6700\u4E45\u672A\u4F7F\u7528\u5220\u9664\u3002\u9ED8\u8BA4 1000\u3002").addText(
+      (text) => text.setPlaceholder("1000").setValue(String(s.maxCacheSize)).onChange((v) => {
+        const n = parseInt(v, 10);
+        if (!isNaN(n) && n >= 0) {
+          s.maxCacheSize = Math.min(1e4, Math.max(0, n));
+          this.plugin.saveData(s);
+        }
+      })
+    );
+    new import_obsidian.Setting(containerEl).setName("\u9884\u751F\u6210\u53E6\u4E00\u4E3B\u9898").setDesc("\u6E32\u67D3\u5F53\u524D\u4E3B\u9898\u540E\uFF0C\u5728\u540E\u53F0\u518D\u6E32\u67D3\u53E6\u4E00\u4E3B\u9898\u5E76\u5199\u5165\u7F13\u5B58\uFF0C\u5207\u6362\u6DF1/\u6D45\u8272\u65F6\u66F4\u5FEB\u3002").addToggle(
+      (t) => t.setValue(s.preGenerateOtherTheme).onChange((v) => {
+        s.preGenerateOtherTheme = v;
+        this.plugin.saveData(s);
+      })
+    );
+    const countSetting = new import_obsidian.Setting(containerEl).setName("\u5F53\u524D\u7F13\u5B58").setDesc("");
+    const countDesc = countSetting.descEl;
+    const updateCount = () => {
+      const n = getDiskCacheCount(s.cacheDir);
+      countDesc.setText(`${n} \u5F20`);
+    };
+    updateCount();
+    new import_obsidian.Setting(containerEl).setName("\u6E05\u7406\u7F13\u5B58").setDesc("\u5220\u9664\u7F13\u5B58\u76EE\u5F55\u4E0B\u6240\u6709\u5DF2\u7F13\u5B58\u7684\u56FE\u7247\u3002").addButton(
+      (btn) => btn.setButtonText("\u6E05\u7406").onClick(() => {
+        clearDiskCache(s.cacheDir);
+        updateCount();
+      })
+    );
+  }
+};
 var YeQuiverPlugin = class extends import_obsidian.Plugin {
   constructor(app, manifest) {
     super(app, manifest);
+    this.settings = { ...DEFAULT_SETTINGS };
+  }
+  async loadSettings() {
+    const data = await this.loadData();
+    if (data) this.settings = { ...DEFAULT_SETTINGS, ...data };
+    await this.saveData(this.settings);
   }
   onload() {
+    this.loadSettings().then(() => {
+      this.onloadWithSettings();
+    });
+  }
+  onloadWithSettings() {
     const pluginDir = getPluginDir(this.app, this.manifest);
     if (!pluginDir) {
       console.warn("Ye Quiver: could not resolve plugin directory");
@@ -303,13 +474,15 @@ var YeQuiverPlugin = class extends import_obsidian.Plugin {
     if (pluginDir && fs.existsSync(stylesPath)) {
       this.addStyleSheet(stylesPath);
     }
+    this.addSettingTab(new YeQuiverSettingTab(this.app, this));
+    const plugin = this;
     const renderOne = async (container, source) => {
       while (container.firstChild) container.removeChild(container.firstChild);
       const { tex, style: displayStyle } = parseDisplayOptions(source);
       const dark = isDarkMode();
       const loading = container.createDiv({ cls: "ye-quiver-loading", text: "Rendering TikZ\u2026" });
       try {
-        const base64 = await tikzToPngBase64(tex, dark);
+        const base64 = await tikzToPngBase64(tex, dark, plugin.settings);
         loading.remove();
         const img = container.createEl("img", {
           attr: {
@@ -321,6 +494,10 @@ var YeQuiverPlugin = class extends import_obsidian.Plugin {
         if (Object.keys(displayStyle).length > 0) {
           Object.assign(img.style, displayStyle);
           if (displayStyle.transform) img.style.transformOrigin = "top left";
+        }
+        if (plugin.settings.preGenerateOtherTheme) {
+          void tikzToPngBase64(tex, !dark, plugin.settings).catch(() => {
+          });
         }
       } catch (err) {
         loading.remove();
@@ -382,7 +559,7 @@ var YeQuiverPlugin = class extends import_obsidian.Plugin {
           const tikz = params.tikz && params.tikz.trim() ? params.tikz.trim() : TEST_TIKZ;
           const dark = params.dark === "true" || params.dark === "1";
           try {
-            await tikzToPngBase64(tikz, dark);
+            await tikzToPngBase64(tikz, dark, plugin.settings);
             return "OK";
           } catch (err) {
             return "FAIL: " + (err?.message || String(err));
