@@ -207,7 +207,7 @@ async function main() {
     const texinputs = styDir + path.sep + delim + (process.env.TEXINPUTS || "");
     const pdflatex = getPdflatexPath();
     const pdftoppm = getPdftoppmPath();
-    await run(pdflatex, ["-interaction=nonstopmode", "-halt-on-error", "-output-directory", tmpDir, "diagram.tex"], {
+    await run(pdflatex, ["-interaction=batchmode", "-halt-on-error", "-output-directory", tmpDir, "diagram.tex"], {
       cwd: tmpDir,
       env: { ...process.env, TEXINPUTS: texinputs },
     });

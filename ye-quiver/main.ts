@@ -172,64 +172,119 @@ function getNodePath(): string {
   return "node";
 }
 
-async function tikzToPngBase64(tex: string, dark: boolean): Promise<string> {
+const RENDER_CACHE_MAX = 30;
+const renderCache = new Map<string, string>();
+const renderCacheKeys: string[] = [];
+
+function getAssetDir(): string {
   const path = require("path");
   const fs = require("fs");
   const os = require("os");
+  try {
+    const base = path.join(os.tmpdir(), "ye-quiver-assets");
+    if (!fs.existsSync(base)) fs.mkdirSync(base, { recursive: true });
+    const cliPath = path.join(base, "index.mjs");
+    const styDir = path.join(base, "package");
+    const styPath = path.join(styDir, "quiver.sty");
+    if (!fs.existsSync(cliPath) || !fs.existsSync(styPath)) {
+      fs.mkdirSync(styDir, { recursive: true });
+      fs.writeFileSync(cliPath, EMBEDDED_CLI_SOURCE, "utf8");
+      fs.writeFileSync(styPath, EMBEDDED_QUIVER_STY, "utf8");
+    }
+    return base;
+  } catch {
+    const fallback = fs.mkdtempSync(path.join(os.tmpdir(), "ye-quiver-"));
+    fs.mkdirSync(path.join(fallback, "package"), { recursive: true });
+    fs.writeFileSync(path.join(fallback, "index.mjs"), EMBEDDED_CLI_SOURCE, "utf8");
+    fs.writeFileSync(path.join(fallback, "package", "quiver.sty"), EMBEDDED_QUIVER_STY, "utf8");
+    return fallback;
+  }
+}
+
+function cacheKey(tex: string, dark: boolean): string {
+  return (dark ? "1" : "0") + "\n" + tex;
+}
+
+function getCached(tex: string, dark: boolean): string | null {
+  const key = cacheKey(tex, dark);
+  const b64 = renderCache.get(key);
+  if (b64 != null) {
+    const idx = renderCacheKeys.indexOf(key);
+    if (idx >= 0) {
+      renderCacheKeys.splice(idx, 1);
+      renderCacheKeys.push(key);
+    }
+    return b64;
+  }
+  return null;
+}
+
+function setCached(tex: string, dark: boolean, base64: string): void {
+  const key = cacheKey(tex, dark);
+  if (renderCache.has(key)) {
+    const idx = renderCacheKeys.indexOf(key);
+    if (idx >= 0) renderCacheKeys.splice(idx, 1);
+  }
+  renderCacheKeys.push(key);
+  renderCache.set(key, base64);
+  while (renderCache.size > RENDER_CACHE_MAX && renderCacheKeys.length > 0) {
+    const evict = renderCacheKeys.shift()!;
+    renderCache.delete(evict);
+  }
+}
+
+async function tikzToPngBase64(tex: string, dark: boolean): Promise<string> {
+  const cached = getCached(tex, dark);
+  if (cached != null) return cached;
+
+  const path = require("path");
+  const fs = require("fs");
   const { spawn } = require("child_process");
 
-  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ye-quiver-"));
-  const cliPath = path.join(tmpDir, "index.mjs");
-  const styDir = path.join(tmpDir, "package");
-  const styPath = path.join(styDir, "quiver.sty");
-  try {
-    fs.mkdirSync(styDir, { recursive: true });
-    fs.writeFileSync(cliPath, EMBEDDED_CLI_SOURCE, "utf8");
-    fs.writeFileSync(styPath, EMBEDDED_QUIVER_STY, "utf8");
+  const base = getAssetDir();
+  const cliPath = path.join(base, "index.mjs");
+  const styDir = path.join(base, "package");
 
-    const args = [cliPath, "--sty-dir", styDir, "--base64"];
-    if (dark) args.push("--dark");
-    const nodeCmd = getNodePath();
-    return await new Promise((resolve, reject) => {
-      const proc = spawn(nodeCmd, args, {
-        stdio: ["pipe", "pipe", "pipe"],
-        env: { ...process.env },
-      });
-      let stdout = Buffer.alloc(0);
-      let stderr = "";
-      proc.stdout?.on("data", (chunk: Buffer) => {
-        stdout = Buffer.concat([stdout, chunk]);
-      });
-      proc.stderr?.on("data", (chunk: Buffer) => {
-        stderr += chunk.toString();
-      });
-      proc.on("error", (err: Error) => {
-        const msg =
-          (err as NodeJS.ErrnoException).code === "ENOENT"
-            ? `未找到 Node.js（已尝试: ${nodeCmd}）。请安装 Node.js 并确保在常见路径（如 /opt/homebrew/bin、/usr/local/bin）或系统 PATH 中。`
-            : "无法启动 node: " + (err.message || String(err));
-        reject(new Error(msg));
-      });
-      proc.on("close", (code: number | null, signal: string | null) => {
-        if (code === 0 && signal == null) {
-          // CLI 已输出 base64 文本，直接取 UTF-8 字符串，勿再 .toString("base64") 否则会二次编码
-          resolve(stdout.toString("utf8").trim());
-          return;
-        }
-        const msg = signal
-          ? `进程被终止 (signal: ${signal})`
-          : code != null
-            ? `退出码 ${code}`
-            : "退出码未知";
-        reject(new Error(stderr.trim() || msg));
-      });
-      proc.stdin?.end(tex, "utf8");
+  const args = [cliPath, "--sty-dir", styDir, "--base64"];
+  if (dark) args.push("--dark");
+  const nodeCmd = getNodePath();
+  const result = await new Promise<string>((resolve, reject) => {
+    const proc = spawn(nodeCmd, args, {
+      stdio: ["pipe", "pipe", "pipe"],
+      env: { ...process.env },
     });
-  } finally {
-    try {
-      fs.rmSync(tmpDir, { recursive: true, force: true });
-    } catch (_) {}
-  }
+    let stdout = Buffer.alloc(0);
+    let stderr = "";
+    proc.stdout?.on("data", (chunk: Buffer) => {
+      stdout = Buffer.concat([stdout, chunk]);
+    });
+    proc.stderr?.on("data", (chunk: Buffer) => {
+      stderr += chunk.toString();
+    });
+    proc.on("error", (err: Error) => {
+      const msg =
+        (err as NodeJS.ErrnoException).code === "ENOENT"
+          ? `未找到 Node.js（已尝试: ${nodeCmd}）。请安装 Node.js 并确保在常见路径（如 /opt/homebrew/bin、/usr/local/bin）或系统 PATH 中。`
+          : "无法启动 node: " + (err.message || String(err));
+      reject(new Error(msg));
+    });
+    proc.on("close", (code: number | null, signal: string | null) => {
+      if (code === 0 && signal == null) {
+        resolve(stdout.toString("utf8").trim());
+        return;
+      }
+      const msg = signal
+        ? `进程被终止 (signal: ${signal})`
+        : code != null
+          ? `退出码 ${code}`
+          : "退出码未知";
+      reject(new Error(stderr.trim() || msg));
+    });
+    proc.stdin?.end(tex, "utf8");
+  });
+
+  setCached(tex, dark, result);
+  return result;
 }
 
 export default class YeQuiverPlugin extends Plugin {
@@ -281,15 +336,18 @@ export default class YeQuiverPlugin extends Plugin {
       }
     };
 
-    const refreshAllTikz = async () => {
+    const refreshAllTikz = () => {
       const containers = document.querySelectorAll<HTMLElement>(".ye-quiver-container[data-ye-quiver-source]");
-      for (const container of containers) {
-        const encoded = container.getAttribute("data-ye-quiver-source");
-        if (!encoded) continue;
-        const source = decodeSourceFromAttr(encoded);
-        if (!source) continue;
-        await renderOne(container, source);
-      }
+      const tasks = Array.from(containers)
+        .map((container) => {
+          const encoded = container.getAttribute("data-ye-quiver-source");
+          if (!encoded) return null;
+          const source = decodeSourceFromAttr(encoded);
+          if (!source) return null;
+          return renderOne(container, source);
+        })
+        .filter((p): p is Promise<void> => p != null);
+      void Promise.all(tasks);
     };
 
     try {
