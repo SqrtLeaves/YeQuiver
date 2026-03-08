@@ -1,10 +1,10 @@
 {
   "id": "ye-quiver",
-  "name": "Ye Quiver",
+  "name": "ye-quiver",
   "version": "0.1.0",
   "minAppVersion": "0.15.0",
   "description": "Render TikZ/tikz-cd code blocks as images using the quiver LaTeX package.",
-  "author": "Ye Quiver",
+  "author": "ye-quiver",
   "authorUrl": "https://github.com/ye-quiver",
   "isDesktopOnly": true
 }

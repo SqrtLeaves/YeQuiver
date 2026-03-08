@@ -1,10 +1,10 @@
-# 将 Ye Quiver 发布到 Obsidian 社区插件库
+# 将 ye-quiver 发布到 Obsidian 社区插件库
 
 按以下步骤可将本插件提交到 [Obsidian 社区插件列表](https://github.com/obsidianmd/obsidian-releases)，通过 Obsidian 内「浏览」即可安装。
 
 ## 前置条件
 
-- 本仓库已推送到 **GitHub**（例如 `https://github.com/YOUR_USERNAME/YeQuiver`）。
+- 本仓库已推送到 **GitHub**（例如 `https://github.com/YOUR_USERNAME/ye-quiver`）。
 - 仓库根目录有 **LICENSE** 和 **README.md**（本仓库已具备）。
 - 发布前请将 `manifest.json` 中的 `author`、`authorUrl` 改为你的 GitHub 用户名/主页（可选但建议）。
 
@@ -38,7 +38,7 @@
   1. 确保本地已提交并 push 了包含最新 `ye-quiver` 代码的 commit（含 `manifest.json` 中要发布的版本号）。
   2. 在 GitHub 仓库页面：**Releases → Create a new release**。
   3. **Choose a tag**：输入与 `manifest.json` 中一致的版本号（如 `0.1.0`），选择 “Create new tag: 0.1.0 on publish”。
-  4. Release title 可填 `Ye Quiver 0.1.0`，描述随意。**无需**在页面上传任何文件。
+  4. Release title 可填 `ye-quiver 0.1.0`，描述随意。**无需**在页面上传任何文件。
   5. 点击 **Publish release**。
   6. 等待约 1 分钟，Actions 会自动构建并把三个文件挂到该 Release 下；可在 Release 页面看到 `manifest.json`、`main.js`、`styles.css`。
 
@@ -63,10 +63,10 @@
    ,
    {
      "id": "ye-quiver",
-     "name": "Ye Quiver",
+     "name": "ye-quiver",
      "author": "你的名字或 GitHub 用户名",
      "description": "Render TikZ/tikz-cd code blocks as images using the quiver LaTeX package.",
-     "repo": "YOUR_GITHUB_USERNAME/YeQuiver",
+     "repo": "YOUR_GITHUB_USERNAME/ye-quiver",
      "branch": "main"
    }
    ```
@@ -79,7 +79,7 @@
    - 按 PR 模板填写说明，勾选已完成的项。
 
 4. **等待审核**  
-   Obsidian 团队会审核你的 PR。通过合并后，用户即可在 Obsidian 内通过「设置 → 社区插件 → 浏览」搜索 “Ye Quiver” 安装。
+   Obsidian 团队会审核你的 PR。通过合并后，用户即可在 Obsidian 内通过「设置 → 社区插件 → 浏览」搜索 “ye-quiver” 安装。
 
 ## 四、后续更新
 

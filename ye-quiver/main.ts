@@ -1,4 +1,4 @@
-import { App, Plugin, PluginManifest, PluginSettingTab, Setting } from "obsidian";
+import { App, Notice, Plugin, PluginManifest, PluginSettingTab, Setting } from "obsidian";
 import { EMBEDDED_CLI_SOURCE, EMBEDDED_QUIVER_STY } from "./embedded-assets.generated";
 
 declare const require: (id: string) => any;
@@ -12,6 +12,7 @@ const MANIFEST_FILENAME = "cache-manifest.json";
 export interface YeQuiverSettings {
   cacheDir: string;
   maxCacheSize: number;
+  maxMemoryCacheSize: number;
   preGenerateOtherTheme: boolean;
 }
 
@@ -28,6 +29,7 @@ function getDefaultCacheDir(): string {
 const DEFAULT_SETTINGS: YeQuiverSettings = {
   cacheDir: getDefaultCacheDir(),
   maxCacheSize: 1000,
+  maxMemoryCacheSize: 30,
   preGenerateOtherTheme: true,
 };
 const NODE_MODULES_AVAILABLE: boolean = (() => {
@@ -196,7 +198,6 @@ function getNodePath(): string {
   return "node";
 }
 
-const RENDER_CACHE_MAX = 30;
 const renderCache = new Map<string, string>();
 const renderCacheKeys: string[] = [];
 
@@ -243,7 +244,7 @@ function getCached(tex: string, dark: boolean): string | null {
   return null;
 }
 
-function setCached(tex: string, dark: boolean, base64: string): void {
+function setCached(tex: string, dark: boolean, base64: string, maxSize: number): void {
   const key = cacheKey(tex, dark);
   if (renderCache.has(key)) {
     const idx = renderCacheKeys.indexOf(key);
@@ -251,10 +252,19 @@ function setCached(tex: string, dark: boolean, base64: string): void {
   }
   renderCacheKeys.push(key);
   renderCache.set(key, base64);
-  while (renderCache.size > RENDER_CACHE_MAX && renderCacheKeys.length > 0) {
+  while (renderCache.size > maxSize && renderCacheKeys.length > 0) {
     const evict = renderCacheKeys.shift()!;
     renderCache.delete(evict);
   }
+}
+
+function getMemoryCacheCount(): number {
+  return renderCache.size;
+}
+
+function clearMemoryCache(): void {
+  renderCache.clear();
+  renderCacheKeys.length = 0;
 }
 
 /** 磁盘缓存：根据 (tex, dark) 生成唯一文件名（不含扩展名）。 */
@@ -363,7 +373,7 @@ async function tikzToPngBase64(tex: string, dark: boolean, settings: YeQuiverSet
   if (mem != null) return mem;
   const disk = getDiskCached(tex, dark, settings.cacheDir);
   if (disk != null) {
-    setCached(tex, dark, disk);
+    setCached(tex, dark, disk, settings.maxMemoryCacheSize);
     return disk;
   }
 
@@ -394,8 +404,8 @@ async function tikzToPngBase64(tex: string, dark: boolean, settings: YeQuiverSet
     proc.on("error", (err: Error) => {
       const msg =
         (err as NodeJS.ErrnoException).code === "ENOENT"
-          ? `未找到 Node.js（已尝试: ${nodeCmd}）。请安装 Node.js 并确保在常见路径（如 /opt/homebrew/bin、/usr/local/bin）或系统 PATH 中。`
-          : "无法启动 node: " + (err.message || String(err));
+          ? `Node.js not found (tried: ${nodeCmd}). Install Node.js and ensure it is on PATH or in a common location (e.g. /opt/homebrew/bin, /usr/local/bin).`
+          : "Failed to start node: " + (err.message || String(err));
       reject(new Error(msg));
     });
     proc.on("close", (code: number | null, signal: string | null) => {
@@ -404,23 +414,26 @@ async function tikzToPngBase64(tex: string, dark: boolean, settings: YeQuiverSet
         return;
       }
       const msg = signal
-        ? `进程被终止 (signal: ${signal})`
+        ? `Process terminated (signal: ${signal})`
         : code != null
-          ? `退出码 ${code}`
-          : "退出码未知";
+          ? `Exit code ${code}`
+          : "Unknown exit code";
       reject(new Error(stderr.trim() || msg));
     });
     proc.stdin?.end(tex, "utf8");
   });
 
-  setCached(tex, dark, result);
+  setCached(tex, dark, result, settings.maxMemoryCacheSize);
   setDiskCache(tex, dark, result, settings.cacheDir, settings.maxCacheSize);
   return result;
 }
 
 class YeQuiverSettingTab extends PluginSettingTab {
-  constructor(app: App, private plugin: YeQuiverPlugin) {
+  plugin: YeQuiverPlugin;
+
+  constructor(app: App, plugin: YeQuiverPlugin) {
     super(app, plugin);
+    this.plugin = plugin;
   }
 
   display(): void {
@@ -429,8 +442,8 @@ class YeQuiverSettingTab extends PluginSettingTab {
     const s = this.plugin.settings;
 
     new Setting(containerEl)
-      .setName("缓存目录")
-      .setDesc("渲染结果 PNG 的存储路径，留空则禁用磁盘缓存。默认：系统临时目录下的 ye-quiver-cache。")
+      .setName("Cache directory")
+      .setDesc("Directory for rendered PNGs. Leave empty to disable disk cache. Default: ye-quiver-cache under system temp.")
       .addText((text) =>
         text
           .setPlaceholder(getDefaultCacheDir())
@@ -442,8 +455,8 @@ class YeQuiverSettingTab extends PluginSettingTab {
       );
 
     new Setting(containerEl)
-      .setName("最大缓存数量")
-      .setDesc("最多保留的图片数量（张），超出时按最久未使用删除。默认 1000。")
+      .setName("Max disk cache size")
+      .setDesc("Maximum number of images to keep on disk; oldest are removed when exceeded. Default 1000.")
       .addText((text) =>
         text
           .setPlaceholder("1000")
@@ -458,8 +471,24 @@ class YeQuiverSettingTab extends PluginSettingTab {
       );
 
     new Setting(containerEl)
-      .setName("预生成另一主题")
-      .setDesc("渲染当前主题后，在后台再渲染另一主题并写入缓存，切换深/浅色时更快。")
+      .setName("Max memory cache size")
+      .setDesc("Maximum number of images to keep in memory; oldest are evicted when exceeded. Default 30.")
+      .addText((text) =>
+        text
+          .setPlaceholder("30")
+          .setValue(String(s.maxMemoryCacheSize))
+          .onChange((v) => {
+            const n = parseInt(v, 10);
+            if (!isNaN(n) && n >= 0) {
+              s.maxMemoryCacheSize = Math.min(500, Math.max(0, n));
+              this.plugin.saveData(s);
+            }
+          })
+      );
+
+    new Setting(containerEl)
+      .setName("Pre-generate other theme")
+      .setDesc("After rendering for current theme, also render for the other theme in background for faster light/dark switching.")
       .addToggle((t) =>
         t.setValue(s.preGenerateOtherTheme).onChange((v) => {
           s.preGenerateOtherTheme = v;
@@ -468,22 +497,25 @@ class YeQuiverSettingTab extends PluginSettingTab {
       );
 
     const countSetting = new Setting(containerEl)
-      .setName("当前缓存")
+      .setName("Current cache")
       .setDesc("");
     const countDesc = countSetting.descEl;
     const updateCount = () => {
-      const n = getDiskCacheCount(s.cacheDir);
-      countDesc.setText(`${n} 张`);
+      const diskN = getDiskCacheCount(s.cacheDir);
+      const memN = getMemoryCacheCount();
+      countDesc.setText(`${diskN} on disk, ${memN} in memory`);
     };
     updateCount();
 
     new Setting(containerEl)
-      .setName("清理缓存")
-      .setDesc("删除缓存目录下所有已缓存的图片。")
+      .setName("Clear cache")
+      .setDesc("Clear in-memory cache and delete all cached images from the cache directory.")
       .addButton((btn) =>
-        btn.setButtonText("清理").onClick(() => {
-          clearDiskCache(s.cacheDir);
+        btn.setButtonText("Clear").onClick(() => {
+          clearMemoryCache();
+          const diskRemoved = clearDiskCache(s.cacheDir);
           updateCount();
+          new Notice(`Cache cleared (${diskRemoved} removed from disk).`);
         })
       );
   }
@@ -503,19 +535,59 @@ export default class YeQuiverPlugin extends Plugin {
     await this.saveData(this.settings);
   }
 
-  onload() {
-    this.loadSettings().then(() => {
-      this.onloadWithSettings();
-    });
+  openPluginSettings(): void {
+    const app = this.app as any;
+    if (typeof app?.setting?.open === "function") {
+      app.setting.open();
+      if (typeof app?.setting?.activateTab === "function") {
+        try {
+          app.setting.activateTab(this.manifest.id);
+        } catch (_) {}
+      }
+    }
+    new Notice("If not opened: Settings → Community plugins → click ye-quiver");
   }
 
-  onloadWithSettings(): void {
+  async onload() {
+    try {
+      await this.loadSettings();
+    } catch (e) {
+      console.warn("ye-quiver: loadSettings failed", e);
+      this.settings = { ...DEFAULT_SETTINGS };
+    }
+
+    this.addSettingTab(new YeQuiverSettingTab(this.app, this));
+
+    this.addRibbonIcon("settings", "ye-quiver settings", () => this.openPluginSettings());
+
+    const statusBar = this.addStatusBarItem();
+    statusBar.setText("ye-quiver");
+    statusBar.setAttribute("aria-label", "Open ye-quiver settings");
+    statusBar.style.cursor = "pointer";
+    statusBar.addEventListener("click", () => this.openPluginSettings());
+
+    this.addCommand({
+      id: "open-settings",
+      name: "Open ye-quiver settings",
+      callback: () => this.openPluginSettings(),
+    });
+
+    this.addCommand({
+      id: "clear-cache",
+      name: "Clear ye-quiver cache",
+      callback: () => {
+        clearMemoryCache();
+        const n = clearDiskCache(this.settings.cacheDir);
+        new Notice(`Cache cleared (${n} removed from disk).`);
+      },
+    });
+
     const pluginDir = getPluginDir(this.app, this.manifest);
     if (!pluginDir) {
-      console.warn("Ye Quiver: could not resolve plugin directory");
+      console.warn("ye-quiver: could not resolve plugin directory");
     }
     if (!NODE_MODULES_AVAILABLE) {
-      console.warn("Ye Quiver: child_process not available (e.g. mobile). TikZ blocks will show a message.");
+      console.warn("ye-quiver: child_process not available (e.g. mobile). TikZ blocks will show a message.");
     }
 
     const path = require("path");
@@ -524,8 +596,6 @@ export default class YeQuiverPlugin extends Plugin {
     if (pluginDir && fs.existsSync(stylesPath)) {
       this.addStyleSheet(stylesPath);
     }
-
-    this.addSettingTab(new YeQuiverSettingTab(this.app, this));
 
     const plugin = this;
     const renderOne = async (container: HTMLElement, source: string): Promise<void> => {
@@ -579,7 +649,7 @@ export default class YeQuiverPlugin extends Plugin {
       const yeQuiverHighlight = createYeQuiverHighlightPlugin(ViewPlugin, Decoration, RangeSetBuilder);
       this.registerEditorExtension(yeQuiverHighlight);
     } catch (_) {
-      console.warn("Ye Quiver: editor syntax highlighting not available (CodeMirror view/state)");
+      console.warn("ye-quiver: editor syntax highlighting not available (CodeMirror view/state)");
     }
 
     this.registerMarkdownCodeBlockProcessor("ye-quiver", async (source, el, ctx) => {
@@ -588,7 +658,7 @@ export default class YeQuiverPlugin extends Plugin {
       if (!NODE_MODULES_AVAILABLE) {
         container.createDiv({
           cls: "ye-quiver-error",
-          text: "Ye Quiver 无法在当前 Obsidian 环境中执行系统命令（无 child_process）。请用命令行生成图片后插入：在仓库目录运行 node cli/index.mjs --output 图.png <你的.tex>，再将生成的 PNG 插入笔记。",
+          text: "ye-quiver cannot run system commands in this environment (no child_process). Generate images via CLI: run node cli/index.mjs --output out.png <your.tex> in the repo, then insert the PNG into your note.",
         });
         return;
       }
@@ -596,6 +666,15 @@ export default class YeQuiverPlugin extends Plugin {
     });
 
     this.registerEvent(this.app.workspace.on("css-change", refreshAllTikz));
+
+    this.addCommand({
+      id: "refresh-all",
+      name: "Refresh all ye-quiver diagrams",
+      callback: () => {
+        refreshAllTikz();
+        new Notice("Refreshed all TikZ diagrams.");
+      },
+    });
 
     if (typeof (this as any).registerCliHandler === "function") {
       (this as any).registerCliHandler(

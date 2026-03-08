@@ -1,4 +1,4 @@
-# Ye Quiver — Obsidian 插件
+# ye-quiver — Obsidian 插件
 
 在 Obsidian 阅读模式中将 **TikZ / tikz-cd** 代码块渲染为图片。基于本仓库的 quiver LaTeX 包（`package/quiver.sty`）。
 
@@ -61,7 +61,7 @@ DEST="/你的/vault/路径/.obsidian/plugins/ye-quiver" ./deploy-ye-quiver.sh
 
 1. 打开该 vault，进入 **设置 → 社区插件**
 2. 关闭 **安全模式**，若需“从本地安装”则先选择并加载插件目录
-3. 在社区插件列表中找到 **Ye Quiver**，打开开关
+3. 在社区插件列表中找到 **ye-quiver**，打开开关
 
 之后在阅读模式下打开包含 ` ```ye-quiver ` 代码块的笔记即可看到渲染结果。
 
@@ -80,7 +80,7 @@ DEST="/你的/vault/路径/.obsidian/plugins/ye-quiver" ./deploy-ye-quiver.sh
 | 方式 | 适用 |
 |------|------|
 | [从零部署](#从零部署已安装-obsidianclone-本库后) | 已 clone 本库，从源码构建并安装到本机 vault |
-| 从 Obsidian 社区插件安装 | 插件已上架时：设置 → 社区插件 → 浏览 → 搜索 “Ye Quiver” 安装 |
+| 从 Obsidian 社区插件安装 | 插件已上架时：设置 → 社区插件 → 浏览 → 搜索 “ye-quiver” 安装 |
 
 ---
 
@@ -109,12 +109,21 @@ DEST="/你的/vault/路径/.obsidian/plugins/ye-quiver" ./deploy-ye-quiver.sh
 - **编辑时高亮**：在编辑器中，`ye-quiver` 代码块内的 TikZ/LaTeX 会按 TeX 风格高亮。
 - **阅读模式**：插件调用内嵌 CLI，用 `quiver.sty` 和 pdflatex 生成 PNG 并内嵌显示（默认 300 DPI）。
 - **主题适配**：深色模式下图为浅色节点/箭头，浅色模式下为深色图；切换主题会自动重新渲染。
-- **磁盘缓存**：渲染结果会按「代码 + 主题」缓存到本地目录，再次打开或切换主题时优先读缓存以加快显示。在 **设置 → Ye Quiver** 中可配置缓存目录、最大缓存数量（默认 1000 张）、查看当前缓存张数、清理缓存；可选「预生成另一主题」在渲染时顺便缓存另一主题。
+- **磁盘缓存**：渲染结果会按「代码 + 主题」缓存到本地目录，再次打开或切换主题时优先读缓存以加快显示。配置方式见下方「如何打开插件设置」。
 - **图内缩放（TikZ）**：在 `\begin{tikzcd}` 前使用 `\tikzcdset{ ... }` 可调节样式与缩放。
 - **显示尺寸（魔法注释）**：在代码块**开头**写 `%% key=value`，例如：
   - `%% width=80%`、`%% width=400px`
   - `%% max-width=500px`
   - `%% scale=1.2`
+
+### 如何打开插件设置
+
+1. **左侧 Ribbon（推荐）**：启用插件后，在 Obsidian **最左侧竖条**（与「文件」「搜索」等图标同一列）会出现一个 **齿轮/设置图标**，悬停显示「ye-quiver 设置」，**点击即可打开**本插件设置。
+2. **命令面板**：按 `Ctrl/Cmd + P`，输入 **「打开设置」** 或 **「open settings」**，选择 **ye-quiver: 打开 ye-quiver 设置** 并回车。
+3. **底部状态栏**：窗口最底部状态栏会显示 **「ye-quiver」**，点击可打开设置。
+4. **设置 → 社区插件**：在已安装列表中点 **ye-quiver**，若右侧有齿轮或详情中有「选项」也可进入（部分版本可能不显示）。
+
+若左侧没有出现齿轮图标，请确认插件已启用、已用最新 main.js 覆盖部署并**完全退出后重启 Obsidian**。
 
 ## 开发
 
@@ -134,7 +143,7 @@ npm run test
 ```
 
 - **Standalone CLI 测试**：始终运行。用默认与 `--dark` 各渲染一次最小 tikz-cd，并测试文件输入 + `--output`。
-- **Obsidian CLI 测试**（可选）：需 Obsidian 1.12.2+ 且已开启「设置 → 常规 → Command line interface」。先打开一个测试用 vault、安装并启用 Ye Quiver，再在该 vault 下执行：
+- **Obsidian CLI 测试**（可选）：需 Obsidian 1.12.2+ 且已开启「设置 → 常规 → Command line interface」。先打开一个测试用 vault、安装并启用 ye-quiver，再在该 vault 下执行：
   ```bash
   export OBSIDIAN_VAULT=/path/to/your/test-vault
   npm run test

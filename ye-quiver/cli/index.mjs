@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Ye Quiver CLI: convert TikZ/tikz-cd code to PNG.
+ * ye-quiver CLI: convert TikZ/tikz-cd code to PNG.
  * Requires: pdflatex (TeX Live/MacTeX), pdftoppm (poppler-utils).
  *
  * Usage:

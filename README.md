@@ -19,9 +19,9 @@ learn how to use **quiver** efficiently, see the [tutorial](tutorial.md).
 
 Try **quiver** out: [q.uiver.app](https://q.uiver.app)
 
-### Obsidian 插件（Ye Quiver）
+### Obsidian 插件（ye-quiver）
 
-本仓库包含 **Ye Quiver** Obsidian 插件，用于在笔记中把 TikZ/tikz-cd 代码块渲染成图片。若你已安装 Obsidian 并 clone 了本库，请直接看 **[ye-quiver/README.md](ye-quiver/README.md)** 中的 **[从零部署](ye-quiver/README.md#从零部署已安装-obsidianclone-本库后)** 小节，按步骤安装依赖、构建并安装到 vault 即可。
+本仓库包含 **ye-quiver** Obsidian 插件，用于在笔记中把 TikZ/tikz-cd 代码块渲染成图片。若你已安装 Obsidian 并 clone 了本库，请直接看 **[ye-quiver/README.md](ye-quiver/README.md)** 中的 **[从零部署](ye-quiver/README.md#从零部署已安装-obsidianclone-本库后)** 小节，按步骤安装依赖、构建并安装到 vault 即可。
 
 For tips on using **quiver** (including how to create and modify diagrams entirely using the
 keyboard), see the [**quiver** tutorial](tutorial.md).

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Ye Quiver automated tests.
+ * ye-quiver automated tests.
  *
  * 1) Standalone CLI tests (no Obsidian): always run.
  *    Requires: pdflatex, pdftoppm, node.
@@ -96,7 +96,7 @@ async function testObsidianCli() {
 }
 
 async function main() {
-  console.log("Ye Quiver tests\n");
+  console.log("ye-quiver tests\n");
 
   if (!fs.existsSync(cliPath) || !fs.existsSync(path.join(styDir, "quiver.sty"))) {
     console.error("Run from repo root or ye-quiver; cli and package must exist.");
