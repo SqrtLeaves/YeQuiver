@@ -45,6 +45,108 @@ function isDarkMode(): boolean {
   return typeof document !== "undefined" && document.body.classList.contains("theme-dark");
 }
 
+/** 解析代码块开头的魔法注释 %% key=value，返回 { tex: 去掉注释后的源码, style: 用于 img 的 CSS } */
+function parseDisplayOptions(source: string): { tex: string; style: Record<string, string> } {
+  const style: Record<string, string> = {};
+  let tex = source;
+  const lines = source.split("\n");
+  let i = 0;
+  for (; i < lines.length; i++) {
+    const line = lines[i];
+    const m = line.match(/^\s*%%\s*(\w+)\s*=\s*(.+)\s*$/);
+    if (!m) break;
+    const key = m[1].toLowerCase();
+    const val = m[2].trim();
+    if (key === "width") style.width = val;
+    else if (key === "max-width") style.maxWidth = val;
+    else if (key === "height") style.height = val;
+    else if (key === "max-height") style.maxHeight = val;
+    else if (key === "scale") {
+      const n = parseFloat(val);
+      if (!isNaN(n) && n > 0) style.transform = `scale(${n})`;
+    }
+  }
+  if (i > 0) tex = lines.slice(i).join("\n").trim();
+  return { tex, style };
+}
+
+function encodeSourceForAttr(source: string): string {
+  try {
+    return btoa(unescape(encodeURIComponent(source)));
+  } catch {
+    return "";
+  }
+}
+function decodeSourceFromAttr(encoded: string): string {
+  try {
+    return decodeURIComponent(escape(atob(encoded)));
+  } catch {
+    return "";
+  }
+}
+
+/** 为编辑器中 ```ye-quiver 代码块内容添加 TeX 风格语法高亮 */
+function createYeQuiverHighlightPlugin(
+  ViewPlugin: any,
+  Decoration: any,
+  RangeSetBuilder: any
+): any {
+  const blockRe = /^```ye-quiver\r?\n([\s\S]*?)^```$/gm;
+  const commandRe = /\\([a-zA-Z@]+)/g;
+  const stringRe = /"([^"\\]|\\.)*"/g;
+  const commentRe = /%.*$/gm;
+  const bracketRe = /[{}[\]]/g;
+
+  class PluginValue {
+    decorations: any;
+    constructor(public view: any) {
+      this.decorations = this.buildDecorations();
+    }
+    update() {
+      this.decorations = this.buildDecorations();
+    }
+    buildDecorations() {
+      const builder = new RangeSetBuilder();
+      const doc = this.view.state.doc.toString();
+      let m;
+      blockRe.lastIndex = 0;
+      while ((m = blockRe.exec(doc)) !== null) {
+        const contentStart = m.index + (m[0].indexOf("\n") + 1);
+        const content = m[1];
+        const contentEnd = contentStart + content.length;
+        const marks: Array<{ from: number; to: number; class: string }> = [];
+        function add(re: RegExp, cls: string) {
+          re.lastIndex = 0;
+          let r;
+          while ((r = re.exec(content)) !== null) {
+            marks.push({
+              from: contentStart + r.index,
+              to: contentStart + r.index + r[0].length,
+              class: cls,
+            });
+          }
+        }
+        add(commentRe, "yq-comment");
+        add(stringRe, "yq-string");
+        add(commandRe, "yq-command");
+        add(bracketRe, "yq-bracket");
+        marks.sort((a, b) => a.from - b.from);
+        let last = contentStart;
+        for (const { from, to, class: cls } of marks) {
+          if (from >= last) {
+            builder.add(from, to, Decoration.mark({ class: cls }));
+            last = to;
+          }
+        }
+      }
+      return builder.finish();
+    }
+  }
+  return ViewPlugin.fromClass(PluginValue, {
+    decorations: (v: PluginValue) => v.decorations,
+  });
+}
+
 /** 返回用于执行 CLI 的 node 可执行路径。GUI 应用（如 Obsidian）往往没有完整 PATH，故尝试常见安装位置。 */
 function getNodePath(): string {
   const path = require("path");
@@ -151,20 +253,13 @@ export default class YeQuiverPlugin extends Plugin {
       this.addStyleSheet(stylesPath);
     }
 
-    this.registerMarkdownCodeBlockProcessor("tikz", async (source, el, ctx) => {
+    const renderOne = async (container: HTMLElement, source: string): Promise<void> => {
+      while (container.firstChild) container.removeChild(container.firstChild);
+      const { tex, style: displayStyle } = parseDisplayOptions(source);
       const dark = isDarkMode();
-      const container = el.createDiv({ cls: "ye-quiver-container" });
-      container.setAttribute("data-ye-quiver-theme", dark ? "dark" : "light");
-      if (!NODE_MODULES_AVAILABLE) {
-        container.createDiv({
-          cls: "ye-quiver-error",
-          text: "Ye Quiver 无法在当前 Obsidian 环境中执行系统命令（无 child_process）。请用命令行生成图片后插入：在仓库目录运行 node cli/index.mjs --output 图.png <你的.tex>，再将生成的 PNG 插入笔记。",
-        });
-        return;
-      }
       const loading = container.createDiv({ cls: "ye-quiver-loading", text: "Rendering TikZ…" });
       try {
-        const base64 = await tikzToPngBase64(source.trim(), dark);
+        const base64 = await tikzToPngBase64(tex, dark);
         loading.remove();
         const img = container.createEl("img", {
           attr: {
@@ -173,12 +268,53 @@ export default class YeQuiverPlugin extends Plugin {
             class: "ye-quiver-img",
           },
         });
+        if (Object.keys(displayStyle).length > 0) {
+          Object.assign(img.style, displayStyle);
+          if (displayStyle.transform) img.style.transformOrigin = "top left";
+        }
       } catch (err: any) {
         loading.remove();
-        const msg = err?.message || String(err);
-        container.createDiv({ cls: "ye-quiver-error", text: `TikZ error: ${msg}` });
+        container.createDiv({
+          cls: "ye-quiver-error",
+          text: `TikZ error: ${err?.message || String(err)}`,
+        });
       }
+    };
+
+    const refreshAllTikz = async () => {
+      const containers = document.querySelectorAll<HTMLElement>(".ye-quiver-container[data-ye-quiver-source]");
+      for (const container of containers) {
+        const encoded = container.getAttribute("data-ye-quiver-source");
+        if (!encoded) continue;
+        const source = decodeSourceFromAttr(encoded);
+        if (!source) continue;
+        await renderOne(container, source);
+      }
+    };
+
+    try {
+      const { ViewPlugin, Decoration } = require("@codemirror/view");
+      const { RangeSetBuilder } = require("@codemirror/state");
+      const yeQuiverHighlight = createYeQuiverHighlightPlugin(ViewPlugin, Decoration, RangeSetBuilder);
+      this.registerEditorExtension(yeQuiverHighlight);
+    } catch (_) {
+      console.warn("Ye Quiver: editor syntax highlighting not available (CodeMirror view/state)");
+    }
+
+    this.registerMarkdownCodeBlockProcessor("ye-quiver", async (source, el, ctx) => {
+      const container = el.createDiv({ cls: "ye-quiver-container" });
+      container.setAttribute("data-ye-quiver-source", encodeSourceForAttr(source.trim()));
+      if (!NODE_MODULES_AVAILABLE) {
+        container.createDiv({
+          cls: "ye-quiver-error",
+          text: "Ye Quiver 无法在当前 Obsidian 环境中执行系统命令（无 child_process）。请用命令行生成图片后插入：在仓库目录运行 node cli/index.mjs --output 图.png <你的.tex>，再将生成的 PNG 插入笔记。",
+        });
+        return;
+      }
+      await renderOne(container, source.trim());
     });
+
+    this.registerEvent(this.app.workspace.on("css-change", refreshAllTikz));
 
     if (typeof (this as any).registerCliHandler === "function") {
       (this as any).registerCliHandler(
@@ -191,7 +327,7 @@ export default class YeQuiverPlugin extends Plugin {
             required: false,
           },
           dark: {
-            description: "Use dark theme output",
+            description: "Use light arrows/nodes (for dark theme)",
             required: false,
           },
         },

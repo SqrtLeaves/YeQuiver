@@ -28,10 +28,10 @@ brew install poppler
 
 ## 使用
 
-在笔记里用 **tikz** 代码块写图，例如：
+在笔记里用 **ye-quiver** 代码块写图，例如：
 
 ````markdown
-```tikz
+```ye-quiver
 \begin{tikzcd}
   A \arrow[r] & B
 \end{tikzcd}
@@ -41,14 +41,39 @@ brew install poppler
 或更复杂的 quiver 风格图：
 
 ````markdown
-```tikz
+```ye-quiver
 \begin{tikzcd} & B & \\ \\ {C_0} && {C_1} \\ \arrow[from=3-1, to=1-2] \arrow["f", from=3-3, to=3-1] \end{tikzcd}
 ```
 ````
 
-在 **阅读模式** 下，插件会调用本仓库的 CLI，用 `quiver.sty` 和 pdflatex 生成 PNG 并内嵌显示。
+阅读模式下仅显示渲染后的图片。
 
-**主题适配**：若当前为 Obsidian **深色模式**（`theme-dark`），生成的图会使用深色背景 + 浅色节点与箭头；浅色模式下为浅色背景 + 深色图。切换主题后需重新打开笔记或刷新预览才会重算图片。
+**编辑时高亮**：在编辑器中，\`\`\`ye-quiver 代码块内的 TikZ/LaTeX 会按 TeX 风格高亮（命令、字符串、注释、括号等使用不同颜色）。
+
+在 **阅读模式** 下，插件会调用本仓库的 CLI，用 `quiver.sty` 和 pdflatex 生成 PNG 并内嵌显示（默认 300 DPI，较清晰）。
+
+**主题适配**：若当前为 Obsidian **深色模式**（`theme-dark`），生成的图会使用深色背景 + 浅色节点与箭头；浅色模式下为浅色背景 + 深色图。切换主题时会自动重新渲染。
+
+**图内缩放（TikZ）**：在 `\begin{tikzcd}` 前使用 `\tikzcdset` 可调节标签、矩阵、箭头等样式与缩放，例如：
+
+````markdown
+```ye-quiver
+\tikzcdset{
+  every label/.append style = {scale=1.5},
+  every matrix/.append style = {nodes={scale=1.5, yshift=5ex, xshift=5ex}},
+  every arrow/.append style = {line width=0.5pt},
+}
+\begin{tikzcd}
+  A \arrow[r] & B
+\end{tikzcd}
+```
+````
+
+**显示尺寸（魔法注释）**：在代码块**开头**写 `%% key=value` 可控制图片在 Obsidian 中的显示大小（不改变导出分辨率），例如：
+
+- `%% width=80%` 或 `%% width=400px`
+- `%% max-width=500px`
+- `%% scale=1.2` 整体缩放 1.2 倍
 
 ## 开发
 

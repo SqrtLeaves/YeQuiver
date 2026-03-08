@@ -20,3 +20,18 @@
   height: auto;
   display: block;
 }
+
+/* 编辑器中 ```ye-quiver 代码块的 TikZ/TeX 风格高亮 */
+.cm-line .yq-command {
+  color: var(--color-blue);
+}
+.cm-line .yq-string {
+  color: var(--color-orange);
+}
+.cm-line .yq-comment {
+  color: var(--text-muted);
+  font-style: italic;
+}
+.cm-line .yq-bracket {
+  color: var(--text-muted);
+}

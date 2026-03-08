@@ -52,7 +52,7 @@ async function build() {
   await esbuild.build({
     entryPoints: [path.join(__dirname, "main.ts")],
     bundle: true,
-    external: ["obsidian", "path", "fs", "child_process", "process", "os"],
+    external: ["obsidian", "path", "fs", "child_process", "process", "os", "@codemirror/view", "@codemirror/state"],
     format: "cjs",
     target: "es2020",
     logLevel: "info",

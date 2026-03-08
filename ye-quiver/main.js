@@ -26,7 +26,7 @@ module.exports = __toCommonJS(main_exports);
 var import_obsidian = require("obsidian");
 
 // embedded-assets.generated.ts
-var EMBEDDED_CLI_SOURCE = '#!/usr/bin/env node\n/**\n * Ye Quiver CLI: convert TikZ/tikz-cd code to PNG.\n * Requires: pdflatex (TeX Live/MacTeX), pdftoppm (poppler-utils).\n *\n * Usage:\n *   node cli/index.mjs [options] [input.tex]\n *   echo \'\\begin{tikzcd} A \\arrow[r] & B \\end{tikzcd}\' | node cli/index.mjs\n *\n * Options:\n *   --sty-dir <path>   Directory containing quiver.sty (default: ../package)\n *   --output <path>    Write PNG here (default: temp file, print path)\n *   --base64           Print PNG as base64 to stdout (for embedding)\n *   --dark             Use light nodes/arrows on dark background (for Obsidian dark mode)\n */\n\nimport { spawn } from "child_process";\nimport fs from "fs";\nimport path from "path";\nimport os from "os";\n\nconst DEFAULT_STY_DIR = path.join(path.dirname(new URL(import.meta.url).pathname), "..", "package");\n\nfunction parseArgs() {\n  const args = process.argv.slice(2);\n  const options = { styDir: null, output: null, base64: false, dark: false };\n  let inputFile = null;\n  for (let i = 0; i < args.length; i++) {\n    if (args[i] === "--sty-dir" && args[i + 1]) {\n      options.styDir = args[++i];\n    } else if (args[i] === "--output" && args[i + 1]) {\n      options.output = args[++i];\n    } else if (args[i] === "--base64") {\n      options.base64 = true;\n    } else if (args[i] === "--dark") {\n      options.dark = true;\n    } else if (!args[i].startsWith("-")) {\n      inputFile = args[i];\n      break;\n    }\n  }\n  if (!options.styDir) options.styDir = DEFAULT_STY_DIR;\n  return { options, inputFile };\n}\n\nfunction readInput(inputFile) {\n  if (inputFile) {\n    return fs.readFileSync(inputFile, "utf8");\n  }\n  return new Promise((resolve, reject) => {\n    let data = "";\n    process.stdin.setEncoding("utf8");\n    process.stdin.on("data", (chunk) => (data += chunk));\n    process.stdin.on("end", () => resolve(data));\n    process.stdin.on("error", reject);\n  });\n}\n\nfunction wrapStandalone(tex, dark = false) {\n  const trimmed = tex.trim();\n  // Already a full document\n  if (trimmed.startsWith("\\\\documentclass") || trimmed.startsWith("\\\\document")) {\n    return trimmed;\n  }\n  // Strip optional \\[ \\] wrapper\n  let body = trimmed.replace(/^\\\\\\[\\s*/, "").replace(/\\s*\\\\\\]\\s*$/, "");\n  if (!body.includes("\\\\begin{tikzcd}")) {\n    return null; // Not tikz-cd\n  }\n  const docParts = ["\\\\documentclass[tikz]{standalone}", "\\\\usepackage{quiver}", "\\\\begin{document}"];\n  if (dark) {\n    docParts.push("\\\\pagecolor[rgb]{0.17,0.17,0.17}");\n    docParts.push("\\\\color{white}");\n    docParts.push("\\\\tikzset{every path/.append style={draw=white}, every node/.append style={color=white}}");\n  }\n  docParts.push(body, "\\\\end{document}");\n  return docParts.join("\\n");\n}\n\n/** \u8FD4\u56DE\u53EF\u6267\u884C\u6587\u4EF6\u7684\u5B8C\u6574\u8DEF\u5F84\uFF1BGUI \u8C03\u7528\u65F6 PATH \u5E38\u4E0D\u5305\u542B tex/poppler\uFF0C\u6545\u5C1D\u8BD5\u5E38\u89C1\u5B89\u88C5\u4F4D\u7F6E\u3002 */\nfunction resolveCommand(name, extraPaths) {\n  if (path.isAbsolute(name) && fs.existsSync(name)) return name;\n  const candidates = [...(extraPaths || []), name];\n  for (const p of candidates) {\n    if (path.isAbsolute(p) && fs.existsSync(p)) return p;\n  }\n  return name;\n}\n\nfunction getPdflatexPath() {\n  const candidates = [];\n  if (process.platform === "darwin") {\n    candidates.push("/Library/TeX/texbin/pdflatex");\n    try {\n      const tl = "/usr/local/texlive";\n      if (fs.existsSync(tl)) {\n        const years = fs.readdirSync(tl).filter((d) => /^\\d{4}$/.test(d)).sort().reverse();\n        for (const y of years) {\n          const bin = path.join(tl, y, "bin");\n          if (fs.existsSync(bin)) {\n            const arch = fs.readdirSync(bin);\n            for (const a of arch) {\n              const exe = path.join(bin, a, "pdflatex");\n              if (fs.existsSync(exe)) candidates.push(exe);\n            }\n            break;\n          }\n        }\n      }\n    } catch (_) {}\n  } else if (process.platform === "win32") {\n    const pf = process.env["ProgramFiles"] || "C:\\\\Program Files";\n    const local = process.env.LOCALAPPDATA || "";\n    candidates.push(path.join(pf, "MiKTeX", "miktex", "bin", "x64", "pdflatex.exe"));\n    candidates.push(path.join(pf, "MiKTeX", "miktex", "bin", "pdflatex.exe"));\n    if (local) candidates.push(path.join(local, "Programs", "MiKTeX", "miktex", "bin", "x64", "pdflatex.exe"));\n  } else {\n    candidates.push("/usr/local/texlive/2024/bin/x86_64-linux/pdflatex", "/usr/bin/pdflatex");\n  }\n  return resolveCommand("pdflatex", candidates);\n}\n\nfunction getPdftoppmPath() {\n  const candidates = [];\n  if (process.platform === "darwin") {\n    candidates.push("/opt/homebrew/bin/pdftoppm", "/usr/local/bin/pdftoppm", "/Library/TeX/texbin/pdftoppm");\n  } else if (process.platform === "win32") {\n    const pf = process.env["ProgramFiles"] || "C:\\\\Program Files";\n    candidates.push(path.join(pf, "poppler", "bin", "pdftoppm.exe"));\n  } else {\n    candidates.push("/usr/bin/pdftoppm");\n  }\n  return resolveCommand("pdftoppm", candidates);\n}\n\nfunction run(cmd, args, opts = {}) {\n  return new Promise((resolve, reject) => {\n    const p = spawn(cmd, args, {\n      stdio: ["pipe", "pipe", "pipe"],\n      ...opts,\n    });\n    let stdout = "";\n    let stderr = "";\n    p.stdout?.on("data", (d) => (stdout += d));\n    p.stderr?.on("data", (d) => (stderr += d));\n    p.on("close", (code) => {\n      if (code !== 0) reject(new Error(stderr.trim() || `Exit ${code}`));\n      else resolve(stdout);\n    });\n    p.on("error", reject);\n  });\n}\n\nasync function main() {\n  const { options, inputFile } = parseArgs();\n  const styDir = path.resolve(options.styDir);\n  if (!fs.existsSync(path.join(styDir, "quiver.sty"))) {\n    console.error("quiver.sty not found in", styDir);\n    process.exit(1);\n  }\n\n  const raw = await readInput(inputFile);\n  const fullTex = wrapStandalone(raw, options.dark);\n  if (!fullTex) {\n    console.error("Input must be \\\\begin{tikzcd}...\\\\end{tikzcd} or a full LaTeX document.");\n    process.exit(1);\n  }\n\n  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ye-quiver-"));\n  const texPath = path.join(tmpDir, "diagram.tex");\n  const pdfPath = path.join(tmpDir, "diagram.pdf");\n  const pngPath = path.join(tmpDir, "diagram.png");\n\n  try {\n    fs.writeFileSync(texPath, fullTex, "utf8");\n\n    // TEXINPUTS: prepend sty dir so our quiver.sty (with between/curve) is used, not system\'s\n    const delim = path.delimiter || ":";\n    const texinputs = styDir + path.sep + delim + (process.env.TEXINPUTS || "");\n    const pdflatex = getPdflatexPath();\n    const pdftoppm = getPdftoppmPath();\n    await run(pdflatex, ["-interaction=nonstopmode", "-halt-on-error", "-output-directory", tmpDir, "diagram.tex"], {\n      cwd: tmpDir,\n      env: { ...process.env, TEXINPUTS: texinputs },\n    });\n\n    // pdftoppm: -png -singlefile diagram.pdf diagram -> diagram.png\n    const ppmBase = path.join(tmpDir, "diagram");\n    await run(pdftoppm, ["-png", "-singlefile", "diagram.pdf", ppmBase], { cwd: tmpDir });\n    const generatedPng = ppmBase + ".png";\n    if (!fs.existsSync(generatedPng)) {\n      throw new Error("pdftoppm did not produce diagram.png");\n    }\n\n    if (options.output) {\n      const outPath = path.resolve(options.output);\n      fs.copyFileSync(generatedPng, outPath);\n      if (options.base64) {\n        process.stdout.write(Buffer.from(fs.readFileSync(outPath)).toString("base64"));\n      } else {\n        console.log(outPath);\n      }\n    } else if (options.base64) {\n      process.stdout.write(Buffer.from(fs.readFileSync(generatedPng)).toString("base64"));\n    } else {\n      console.log(generatedPng);\n    }\n  } finally {\n    if (options.output || options.base64) {\n      try {\n        fs.rmSync(tmpDir, { recursive: true, force: true });\n      } catch (_) {}\n    }\n  }\n}\n\nmain().catch((err) => {\n  console.error(err.message || err);\n  process.exit(1);\n});\n';
+var EMBEDDED_CLI_SOURCE = '#!/usr/bin/env node\n/**\n * Ye Quiver CLI: convert TikZ/tikz-cd code to PNG.\n * Requires: pdflatex (TeX Live/MacTeX), pdftoppm (poppler-utils).\n *\n * Usage:\n *   node cli/index.mjs [options] [input.tex]\n *   echo \'\\begin{tikzcd} A \\arrow[r] & B \\end{tikzcd}\' | node cli/index.mjs\n *\n * Options:\n *   --sty-dir <path>   Directory containing quiver.sty (default: ../package)\n *   --output <path>    Write PNG here (default: temp file, print path)\n *   --base64           Print PNG as base64 to stdout (for embedding)\n *   --dark             Use light nodes/arrows on dark background (for Obsidian dark mode)\n *   --bg-rgb <r,g,b>    Page background as 0-1 RGB (e.g. "0.1,0.1,0.1")\n *   --dpi <n>           PNG resolution (default: 300, higher = sharper, larger file)\n */\n\nimport { spawn } from "child_process";\nimport fs from "fs";\nimport path from "path";\nimport os from "os";\n\nconst DEFAULT_STY_DIR = path.join(path.dirname(new URL(import.meta.url).pathname), "..", "package");\nconst DEFAULT_DPI = 300;\n\nfunction parseArgs() {\n  const args = process.argv.slice(2);\n  const options = { styDir: null, output: null, base64: false, dark: false, bgRgb: null, dpi: DEFAULT_DPI };\n  let inputFile = null;\n  for (let i = 0; i < args.length; i++) {\n    if (args[i] === "--sty-dir" && args[i + 1]) {\n      options.styDir = args[++i];\n    } else if (args[i] === "--output" && args[i + 1]) {\n      options.output = args[++i];\n    } else if (args[i] === "--base64") {\n      options.base64 = true;\n    } else if (args[i] === "--dark") {\n      options.dark = true;\n    } else if (args[i] === "--bg-rgb" && args[i + 1]) {\n      options.bgRgb = args[++i];\n    } else if (args[i] === "--dpi" && args[i + 1]) {\n      const n = parseInt(args[++i], 10);\n      if (!isNaN(n) && n > 0) options.dpi = Math.min(600, Math.max(72, n));\n    } else if (!args[i].startsWith("-")) {\n      inputFile = args[i];\n      break;\n    }\n  }\n  if (!options.styDir) options.styDir = DEFAULT_STY_DIR;\n  return { options, inputFile };\n}\n\nfunction readInput(inputFile) {\n  if (inputFile) {\n    return fs.readFileSync(inputFile, "utf8");\n  }\n  return new Promise((resolve, reject) => {\n    let data = "";\n    process.stdin.setEncoding("utf8");\n    process.stdin.on("data", (chunk) => (data += chunk));\n    process.stdin.on("end", () => resolve(data));\n    process.stdin.on("error", reject);\n  });\n}\n\nfunction wrapStandalone(tex, _dark = false, _bgRgb = null) {\n  const trimmed = tex.trim();\n  // Already a full document\n  if (trimmed.startsWith("\\\\documentclass") || trimmed.startsWith("\\\\document")) {\n    return trimmed;\n  }\n  // Strip optional \\[ \\] wrapper\n  let body = trimmed.replace(/^\\\\\\[\\s*/, "").replace(/\\s*\\\\\\]\\s*$/, "");\n  if (!body.includes("\\\\begin{tikzcd}")) {\n    return null; // Not tikz-cd\n  }\n  // \u900F\u660E\u80CC\u666F\uFF1Adark \u7528\u9ED1\u5E95+\u767D\u5B57\u518D\u300C\u9ED1\u2192\u900F\u660E\u300D\uFF0Clight \u7528\u767D\u5E95+\u9ED1\u5B57\u518D\u300C\u767D\u2192\u900F\u660E\u300D\uFF0C\u907F\u514D\u767D\u5B57\u767D\u5E95\u65F6\u6297\u952F\u9F7F\u53D1\u865A\n  const docParts = [\n    _dark ? "\\\\documentclass[tikz,border=0pt]{standalone}" : "\\\\documentclass[tikz]{standalone}",\n    "\\\\usepackage{quiver}",\n    ...(_dark ? ["\\\\usepackage{xcolor}", "\\\\tikzcdset{every cell/.append style={text=white}, every arrow/.append style={draw=white}}"] : []),\n    "\\\\begin{document}",\n    ...(_dark ? ["\\\\pagecolor{black}"] : []),\n    body,\n    "\\\\end{document}",\n  ];\n  return docParts.join("\\n");\n}\n\n/** \u8FD4\u56DE\u53EF\u6267\u884C\u6587\u4EF6\u7684\u5B8C\u6574\u8DEF\u5F84\uFF1BGUI \u8C03\u7528\u65F6 PATH \u5E38\u4E0D\u5305\u542B tex/poppler\uFF0C\u6545\u5C1D\u8BD5\u5E38\u89C1\u5B89\u88C5\u4F4D\u7F6E\u3002 */\nfunction resolveCommand(name, extraPaths) {\n  if (path.isAbsolute(name) && fs.existsSync(name)) return name;\n  const candidates = [...(extraPaths || []), name];\n  for (const p of candidates) {\n    if (path.isAbsolute(p) && fs.existsSync(p)) return p;\n  }\n  return name;\n}\n\nfunction getPdflatexPath() {\n  const candidates = [];\n  if (process.platform === "darwin") {\n    candidates.push("/Library/TeX/texbin/pdflatex");\n    try {\n      const tl = "/usr/local/texlive";\n      if (fs.existsSync(tl)) {\n        const years = fs.readdirSync(tl).filter((d) => /^\\d{4}$/.test(d)).sort().reverse();\n        for (const y of years) {\n          const bin = path.join(tl, y, "bin");\n          if (fs.existsSync(bin)) {\n            const arch = fs.readdirSync(bin);\n            for (const a of arch) {\n              const exe = path.join(bin, a, "pdflatex");\n              if (fs.existsSync(exe)) candidates.push(exe);\n            }\n            break;\n          }\n        }\n      }\n    } catch (_) {}\n  } else if (process.platform === "win32") {\n    const pf = process.env["ProgramFiles"] || "C:\\\\Program Files";\n    const local = process.env.LOCALAPPDATA || "";\n    candidates.push(path.join(pf, "MiKTeX", "miktex", "bin", "x64", "pdflatex.exe"));\n    candidates.push(path.join(pf, "MiKTeX", "miktex", "bin", "pdflatex.exe"));\n    if (local) candidates.push(path.join(local, "Programs", "MiKTeX", "miktex", "bin", "x64", "pdflatex.exe"));\n  } else {\n    candidates.push("/usr/local/texlive/2024/bin/x86_64-linux/pdflatex", "/usr/bin/pdflatex");\n  }\n  return resolveCommand("pdflatex", candidates);\n}\n\nfunction getPdftoppmPath() {\n  const candidates = [];\n  if (process.platform === "darwin") {\n    candidates.push("/opt/homebrew/bin/pdftoppm", "/usr/local/bin/pdftoppm", "/Library/TeX/texbin/pdftoppm");\n  } else if (process.platform === "win32") {\n    const pf = process.env["ProgramFiles"] || "C:\\\\Program Files";\n    candidates.push(path.join(pf, "poppler", "bin", "pdftoppm.exe"));\n  } else {\n    candidates.push("/usr/bin/pdftoppm");\n  }\n  return resolveCommand("pdftoppm", candidates);\n}\n\n/** ImageMagick convert\uFF1A\u7528\u4E8E\u5C06 PDF \u8F6C\u4E3A\u900F\u660E\u80CC\u666F PNG\uFF08\u767D\u2192\u900F\u660E\uFF09\u3002\u4EC5\u5F53\u5728\u5E38\u89C1\u8DEF\u5F84\u627E\u5230\u65F6\u8FD4\u56DE\uFF0C\u5426\u5219 null\u3002 */\nfunction getConvertPath() {\n  const candidates = [];\n  if (process.platform === "darwin") {\n    candidates.push("/opt/homebrew/bin/convert", "/usr/local/bin/convert");\n  } else if (process.platform === "win32") {\n    const pf = process.env["ProgramFiles"] || "C:\\\\Program Files";\n    candidates.push(path.join(pf, "ImageMagick", "convert.exe"));\n  } else {\n    candidates.push("/usr/bin/convert");\n  }\n  for (const p of candidates) {\n    if (fs.existsSync(p)) return p;\n  }\n  return null;\n}\n\nfunction run(cmd, args, opts = {}) {\n  return new Promise((resolve, reject) => {\n    const p = spawn(cmd, args, {\n      stdio: ["pipe", "pipe", "pipe"],\n      ...opts,\n    });\n    let stdout = "";\n    let stderr = "";\n    p.stdout?.on("data", (d) => (stdout += d));\n    p.stderr?.on("data", (d) => (stderr += d));\n    p.on("close", (code) => {\n      if (code !== 0) reject(new Error(stderr.trim() || `Exit ${code}`));\n      else resolve(stdout);\n    });\n    p.on("error", reject);\n  });\n}\n\nasync function main() {\n  const { options, inputFile } = parseArgs();\n  const styDir = path.resolve(options.styDir);\n  if (!fs.existsSync(path.join(styDir, "quiver.sty"))) {\n    console.error("quiver.sty not found in", styDir);\n    process.exit(1);\n  }\n\n  const raw = await readInput(inputFile);\n  const fullTex = wrapStandalone(raw, options.dark, options.bgRgb);\n  if (!fullTex) {\n    console.error("Input must be \\\\begin{tikzcd}...\\\\end{tikzcd} or a full LaTeX document.");\n    process.exit(1);\n  }\n\n  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ye-quiver-"));\n  const texPath = path.join(tmpDir, "diagram.tex");\n  const pdfPath = path.join(tmpDir, "diagram.pdf");\n  const pngPath = path.join(tmpDir, "diagram.png");\n\n  try {\n    fs.writeFileSync(texPath, fullTex, "utf8");\n\n    // TEXINPUTS: prepend sty dir so our quiver.sty (with between/curve) is used, not system\'s\n    const delim = path.delimiter || ":";\n    const texinputs = styDir + path.sep + delim + (process.env.TEXINPUTS || "");\n    const pdflatex = getPdflatexPath();\n    const pdftoppm = getPdftoppmPath();\n    await run(pdflatex, ["-interaction=nonstopmode", "-halt-on-error", "-output-directory", tmpDir, "diagram.tex"], {\n      cwd: tmpDir,\n      env: { ...process.env, TEXINPUTS: texinputs },\n    });\n\n    const ppmBase = path.join(tmpDir, "diagram");\n    const generatedPng = ppmBase + ".png";\n    const convertPath = getConvertPath();\n    if (convertPath) {\n      const transparentColor = options.dark ? "black" : "white";\n      const convertArgs = [\n        "-density", String(options.dpi),\n        "-background", "none",\n        "-alpha", "on",\n        "-alpha", "set",\n      ];\n      if (options.dark) convertArgs.push("-fuzz", "5%");\n      convertArgs.push("-transparent", transparentColor, "diagram.pdf", "diagram.png");\n      try {\n        await run(convertPath, convertArgs, { cwd: tmpDir });\n        if (options.dark) {\n          await run(convertPath, ["diagram.png", "-gravity", "North", "-chop", "0x1", "diagram.png"], { cwd: tmpDir });\n        }\n      } catch (_) {\n        await run(pdftoppm, ["-png", "-r", String(options.dpi), "-singlefile", "diagram.pdf", ppmBase], { cwd: tmpDir });\n      }\n    } else {\n      await run(pdftoppm, ["-png", "-r", String(options.dpi), "-singlefile", "diagram.pdf", ppmBase], { cwd: tmpDir });\n    }\n    if (!fs.existsSync(generatedPng)) {\n      throw new Error("PDF to PNG failed (need pdftoppm or ImageMagick convert for transparent background)");\n    }\n\n    if (options.output) {\n      const outPath = path.resolve(options.output);\n      fs.copyFileSync(generatedPng, outPath);\n      if (options.base64) {\n        process.stdout.write(Buffer.from(fs.readFileSync(outPath)).toString("base64"));\n      } else {\n        console.log(outPath);\n      }\n    } else if (options.base64) {\n      process.stdout.write(Buffer.from(fs.readFileSync(generatedPng)).toString("base64"));\n    } else {\n      console.log(generatedPng);\n    }\n  } finally {\n    if (options.output || options.base64) {\n      try {\n        fs.rmSync(tmpDir, { recursive: true, force: true });\n      } catch (_) {}\n    }\n  }\n}\n\nmain().catch((err) => {\n  console.error(err.message || err);\n  process.exit(1);\n});\n';
 var EMBEDDED_QUIVER_STY = "% *** quiver ***\n% A package for drawing commutative diagrams exported from https://q.uiver.app.\n%\n% This package is currently a wrapper around the `tikz-cd` package, importing necessary TikZ\n% libraries, and defining new TikZ styles for curves of a fixed height and for shortening paths\n% proportionally.\n%\n% Version: 1.6.0\n% Authors:\n% - varkor (https://github.com/varkor)\n% - Andr\xE9C (https://tex.stackexchange.com/users/138900/andr%C3%A9c)\n% - Andrew Stacey (https://tex.stackexchange.com/users/86/andrew-stacey)\n\n\\NeedsTeXFormat{LaTeX2e}\n\\ProvidesPackage{quiver}[2025/09/20 quiver]\n\n% `tikz-cd` is necessary to draw commutative diagrams.\n\\RequirePackage{tikz-cd}\n% `amssymb` is necessary for `\\lrcorner` and `\\ulcorner`.\n\\RequirePackage{amssymb}\n% `calc` is necessary to draw curved arrows.\n\\usetikzlibrary{calc}\n% `pathmorphing` is necessary to draw squiggly arrows.\n\\usetikzlibrary{decorations.pathmorphing}\n% `spath3` is necessary to draw shortened edges.\n\\usetikzlibrary{spath3}\n\n% A TikZ style for curved arrows of a fixed height, due to Andr\xE9C.\n\\tikzset{curve/.style={settings={#1},to path={(\\tikztostart)\n    .. controls ($(\\tikztostart)!\\pv{pos}!(\\tikztotarget)!\\pv{height}!270:(\\tikztotarget)$)\n    and ($(\\tikztostart)!1-\\pv{pos}!(\\tikztotarget)!\\pv{height}!270:(\\tikztotarget)$)\n    .. (\\tikztotarget)\\tikztonodes}},\n    settings/.code={\\tikzset{quiver/.cd,#1}\n        \\def\\pv##1{\\pgfkeysvalueof{/tikz/quiver/##1}}},\n    quiver/.cd,pos/.initial=0.35,height/.initial=0}\n\n% A TikZ style for shortening paths without the poor behaviour of `shorten <' and `shorten >'.\n\\tikzset{between/.style n args={2}{/tikz/execute at end to={\n    \\tikzset{spath/split at keep middle={current}{#1}{#2}}\n}}}\n\n% TikZ arrowhead/tail styles.\n\\tikzset{tail reversed/.code={\\pgfsetarrowsstart{tikzcd to}}}\n\\tikzset{2tail/.code={\\pgfsetarrowsstart{Implies[reversed]}}}\n\\tikzset{2tail reversed/.code={\\pgfsetarrowsstart{Implies}}}\n% TikZ arrow styles.\n\\tikzset{no body/.style={/tikz/dash pattern=on 0 off 1mm}}\n\n\\endinput\n";
 
 // main.ts
@@ -70,6 +70,99 @@ function getPluginDir(app, manifest) {
 }
 function isDarkMode() {
   return typeof document !== "undefined" && document.body.classList.contains("theme-dark");
+}
+function parseDisplayOptions(source) {
+  const style = {};
+  let tex = source;
+  const lines = source.split("\n");
+  let i = 0;
+  for (; i < lines.length; i++) {
+    const line = lines[i];
+    const m = line.match(/^\s*%%\s*(\w+)\s*=\s*(.+)\s*$/);
+    if (!m) break;
+    const key = m[1].toLowerCase();
+    const val = m[2].trim();
+    if (key === "width") style.width = val;
+    else if (key === "max-width") style.maxWidth = val;
+    else if (key === "height") style.height = val;
+    else if (key === "max-height") style.maxHeight = val;
+    else if (key === "scale") {
+      const n = parseFloat(val);
+      if (!isNaN(n) && n > 0) style.transform = `scale(${n})`;
+    }
+  }
+  if (i > 0) tex = lines.slice(i).join("\n").trim();
+  return { tex, style };
+}
+function encodeSourceForAttr(source) {
+  try {
+    return btoa(unescape(encodeURIComponent(source)));
+  } catch {
+    return "";
+  }
+}
+function decodeSourceFromAttr(encoded) {
+  try {
+    return decodeURIComponent(escape(atob(encoded)));
+  } catch {
+    return "";
+  }
+}
+function createYeQuiverHighlightPlugin(ViewPlugin, Decoration, RangeSetBuilder) {
+  const blockRe = /^```ye-quiver\r?\n([\s\S]*?)^```$/gm;
+  const commandRe = /\\([a-zA-Z@]+)/g;
+  const stringRe = /"([^"\\]|\\.)*"/g;
+  const commentRe = /%.*$/gm;
+  const bracketRe = /[{}[\]]/g;
+  class PluginValue {
+    constructor(view) {
+      this.view = view;
+      this.decorations = this.buildDecorations();
+    }
+    update() {
+      this.decorations = this.buildDecorations();
+    }
+    buildDecorations() {
+      const builder = new RangeSetBuilder();
+      const doc = this.view.state.doc.toString();
+      let m;
+      blockRe.lastIndex = 0;
+      while ((m = blockRe.exec(doc)) !== null) {
+        let add2 = function(re, cls) {
+          re.lastIndex = 0;
+          let r;
+          while ((r = re.exec(content)) !== null) {
+            marks.push({
+              from: contentStart + r.index,
+              to: contentStart + r.index + r[0].length,
+              class: cls
+            });
+          }
+        };
+        var add = add2;
+        const contentStart = m.index + (m[0].indexOf("\n") + 1);
+        const content = m[1];
+        const contentEnd = contentStart + content.length;
+        const marks = [];
+        add2(commentRe, "yq-comment");
+        add2(stringRe, "yq-string");
+        add2(commandRe, "yq-command");
+        add2(bracketRe, "yq-bracket");
+        marks.sort((a, b) => a.from - b.from);
+        let last = contentStart;
+        for (const { from, to, class: cls } of marks) {
+          if (from >= last) {
+            builder.add(from, to, Decoration.mark({ class: cls }));
+            last = to;
+          }
+        }
+      }
+      return builder.finish();
+    }
+  }
+  return ViewPlugin.fromClass(PluginValue, {
+    decorations: (v) => v.decorations
+  });
 }
 function getNodePath() {
   const path = require("path");
@@ -162,20 +255,13 @@ var YeQuiverPlugin = class extends import_obsidian.Plugin {
     if (pluginDir && fs.existsSync(stylesPath)) {
       this.addStyleSheet(stylesPath);
     }
-    this.registerMarkdownCodeBlockProcessor("tikz", async (source, el, ctx) => {
+    const renderOne = async (container, source) => {
+      while (container.firstChild) container.removeChild(container.firstChild);
+      const { tex, style: displayStyle } = parseDisplayOptions(source);
       const dark = isDarkMode();
-      const container = el.createDiv({ cls: "ye-quiver-container" });
-      container.setAttribute("data-ye-quiver-theme", dark ? "dark" : "light");
-      if (!NODE_MODULES_AVAILABLE) {
-        container.createDiv({
-          cls: "ye-quiver-error",
-          text: "Ye Quiver \u65E0\u6CD5\u5728\u5F53\u524D Obsidian \u73AF\u5883\u4E2D\u6267\u884C\u7CFB\u7EDF\u547D\u4EE4\uFF08\u65E0 child_process\uFF09\u3002\u8BF7\u7528\u547D\u4EE4\u884C\u751F\u6210\u56FE\u7247\u540E\u63D2\u5165\uFF1A\u5728\u4ED3\u5E93\u76EE\u5F55\u8FD0\u884C node cli/index.mjs --output \u56FE.png <\u4F60\u7684.tex>\uFF0C\u518D\u5C06\u751F\u6210\u7684 PNG \u63D2\u5165\u7B14\u8BB0\u3002"
-        });
-        return;
-      }
       const loading = container.createDiv({ cls: "ye-quiver-loading", text: "Rendering TikZ\u2026" });
       try {
-        const base64 = await tikzToPngBase64(source.trim(), dark);
+        const base64 = await tikzToPngBase64(tex, dark);
         loading.remove();
         const img = container.createEl("img", {
           attr: {
@@ -184,12 +270,49 @@ var YeQuiverPlugin = class extends import_obsidian.Plugin {
             class: "ye-quiver-img"
           }
         });
+        if (Object.keys(displayStyle).length > 0) {
+          Object.assign(img.style, displayStyle);
+          if (displayStyle.transform) img.style.transformOrigin = "top left";
+        }
       } catch (err) {
         loading.remove();
-        const msg = err?.message || String(err);
-        container.createDiv({ cls: "ye-quiver-error", text: `TikZ error: ${msg}` });
+        container.createDiv({
+          cls: "ye-quiver-error",
+          text: `TikZ error: ${err?.message || String(err)}`
+        });
       }
+    };
+    const refreshAllTikz = async () => {
+      const containers = document.querySelectorAll(".ye-quiver-container[data-ye-quiver-source]");
+      for (const container of containers) {
+        const encoded = container.getAttribute("data-ye-quiver-source");
+        if (!encoded) continue;
+        const source = decodeSourceFromAttr(encoded);
+        if (!source) continue;
+        await renderOne(container, source);
+      }
+    };
+    try {
+      const { ViewPlugin, Decoration } = require("@codemirror/view");
+      const { RangeSetBuilder } = require("@codemirror/state");
+      const yeQuiverHighlight = createYeQuiverHighlightPlugin(ViewPlugin, Decoration, RangeSetBuilder);
+      this.registerEditorExtension(yeQuiverHighlight);
+    } catch (_) {
+      console.warn("Ye Quiver: editor syntax highlighting not available (CodeMirror view/state)");
+    }
+    this.registerMarkdownCodeBlockProcessor("ye-quiver", async (source, el, ctx) => {
+      const container = el.createDiv({ cls: "ye-quiver-container" });
+      container.setAttribute("data-ye-quiver-source", encodeSourceForAttr(source.trim()));
+      if (!NODE_MODULES_AVAILABLE) {
+        container.createDiv({
+          cls: "ye-quiver-error",
+          text: "Ye Quiver \u65E0\u6CD5\u5728\u5F53\u524D Obsidian \u73AF\u5883\u4E2D\u6267\u884C\u7CFB\u7EDF\u547D\u4EE4\uFF08\u65E0 child_process\uFF09\u3002\u8BF7\u7528\u547D\u4EE4\u884C\u751F\u6210\u56FE\u7247\u540E\u63D2\u5165\uFF1A\u5728\u4ED3\u5E93\u76EE\u5F55\u8FD0\u884C node cli/index.mjs --output \u56FE.png <\u4F60\u7684.tex>\uFF0C\u518D\u5C06\u751F\u6210\u7684 PNG \u63D2\u5165\u7B14\u8BB0\u3002"
+        });
+        return;
+      }
+      await renderOne(container, source.trim());
     });
+    this.registerEvent(this.app.workspace.on("css-change", refreshAllTikz));
     if (typeof this.registerCliHandler === "function") {
       this.registerCliHandler(
         "ye-quiver:test",
@@ -201,7 +324,7 @@ var YeQuiverPlugin = class extends import_obsidian.Plugin {
             required: false
           },
           dark: {
-            description: "Use dark theme output",
+            description: "Use light arrows/nodes (for dark theme)",
             required: false
           }
         },
