@@ -75,14 +75,14 @@ function wrapStandalone(tex, _dark = false, _bgRgb = null) {
   if (!body.includes("\\begin{tikzcd}")) {
     return null; // Not tikz-cd
   }
-  // 透明背景：dark 用黑底+白字再「黑→透明」，light 用白底+黑字再「白→透明」，避免白字白底时抗锯齿发虚
+  // 透明背景：dark 用黑底+白字再「黑→透明」，light 用白底+黑字再「白→透明」
+  // dark 时用 \color{white} 包裹整图，保证箭头与节点都为白色
   const docParts = [
     _dark ? "\\documentclass[tikz,border=0pt]{standalone}" : "\\documentclass[tikz]{standalone}",
     "\\usepackage{quiver}",
-    ...(_dark ? ["\\usepackage{xcolor}", "\\tikzcdset{every cell/.append style={text=white}, every arrow/.append style={draw=white}}"] : []),
+    ...(_dark ? ["\\usepackage{xcolor}"] : []),
     "\\begin{document}",
-    ...(_dark ? ["\\pagecolor{black}"] : []),
-    body,
+    ...(_dark ? ["\\pagecolor{black}", "{\\color{white}", body, "}"] : [body]),
     "\\end{document}",
   ];
   return docParts.join("\n");
