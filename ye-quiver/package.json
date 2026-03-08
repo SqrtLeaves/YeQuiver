@@ -1,0 +1,20 @@
+{
+  "name": "ye-quiver",
+  "version": "0.1.0",
+  "description": "Obsidian plugin: render TikZ/tikz-cd code blocks as images",
+  "main": "main.js",
+  "scripts": {
+    "dev": "node esbuild.config.mjs",
+    "build": "node esbuild.config.mjs production",
+    "copy-assets": "node copy-assets.mjs",
+    "test": "node scripts/run-tests.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "esbuild": "^0.24.0",
+    "obsidian": "latest",
+    "tslib": "^2.4.0",
+    "typescript": "^5.0.0"
+  },
+  "dependencies": {}
+}

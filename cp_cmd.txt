@@ -1,0 +1,7 @@
+# 在 ye-quiver 目录下执行，目标 vault 插件目录需包含 cli 和 package
+DEST="/Users/leaves/同步空间/Obsidian/MATH/.obsidian/plugins/ye-quiver"
+
+cp manifest.json main.js styles.css "$DEST"
+mkdir -p "$DEST/cli" "$DEST/package"
+cp cli/index.mjs "$DEST/cli/"
+cp package/quiver.sty "$DEST/package/"

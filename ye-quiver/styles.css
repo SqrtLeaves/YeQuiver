@@ -1,0 +1,22 @@
+.ye-quiver-container {
+  margin: 0.5em 0;
+}
+
+.ye-quiver-container .ye-quiver-loading {
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+.ye-quiver-container .ye-quiver-error {
+  color: var(--text-error);
+  font-size: 0.9em;
+  padding: 0.5em;
+  background: var(--background-secondary);
+  border-radius: 4px;
+}
+
+.ye-quiver-container .ye-quiver-img {
+  max-width: 100%;
+  height: auto;
+  display: block;
+}
