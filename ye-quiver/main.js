@@ -33,17 +33,8 @@ var EMBEDDED_QUIVER_STY = "% *** quiver ***\n% A package for drawing commutative
 var TEST_TIKZ = "\\begin{tikzcd}\n	A \\arrow[r] & B\n\\end{tikzcd}";
 var PLUGIN_ID = "ye-quiver";
 var MANIFEST_FILENAME = "cache-manifest.json";
-function getDefaultCacheDir() {
-  try {
-    const path = require("path");
-    const os = require("os");
-    return path.join(os.tmpdir(), "ye-quiver-cache");
-  } catch {
-    return "";
-  }
-}
 var DEFAULT_SETTINGS = {
-  cacheDir: getDefaultCacheDir(),
+  cacheDir: "",
   maxCacheSize: 1e3,
   maxMemoryCacheSize: 30,
   preGenerateOtherTheme: true
@@ -56,9 +47,26 @@ var NODE_MODULES_AVAILABLE = (() => {
     return false;
   }
 })();
+function getObsidianPluginRoot(app, _manifest) {
+  try {
+    const path = require("path");
+    const adapter = app.vault.adapter;
+    if (adapter && typeof adapter.getBasePath === "function") {
+      const base = adapter.getBasePath().replace(/^file:\/\//, "").replace(/\/$/, "");
+      return path.join(base, ".obsidian", "plugins", PLUGIN_ID);
+    }
+  } catch (_) {
+  }
+  return null;
+}
 function getPluginDir(app, manifest) {
   const path = require("path");
   const candidates = [];
+  try {
+    const obsidianRoot = getObsidianPluginRoot(app, manifest);
+    if (obsidianRoot) candidates.push(obsidianRoot);
+  } catch (_) {
+  }
   try {
     if (typeof __dirname !== "undefined") candidates.push(path.resolve(__dirname));
   } catch (_) {
@@ -66,16 +74,6 @@ function getPluginDir(app, manifest) {
   try {
     const mdir = manifest.dir;
     if (mdir && path.isAbsolute(mdir)) candidates.push(mdir);
-  } catch (_) {
-  }
-  try {
-    const vault = app.vault;
-    const adapter = vault.adapter;
-    if (adapter?.getBasePath) {
-      const base = adapter.getBasePath().replace(/^file:\/\//, "").replace(/\/$/, "");
-      const dir = manifest.dir || PLUGIN_ID;
-      candidates.push(path.join(base, ".obsidian", "plugins", dir));
-    }
   } catch (_) {
   }
   const fs = require("fs");
@@ -359,10 +357,10 @@ function clearDiskCache(cacheDir) {
   }
   return n;
 }
-async function tikzToPngBase64(tex, dark, settings) {
+async function tikzToPngBase64(tex, dark, settings, effectiveCacheDir) {
   const mem = getCached(tex, dark);
   if (mem != null) return mem;
-  const disk = getDiskCached(tex, dark, settings.cacheDir);
+  const disk = getDiskCached(tex, dark, effectiveCacheDir);
   if (disk != null) {
     setCached(tex, dark, disk, settings.maxMemoryCacheSize);
     return disk;
@@ -404,7 +402,7 @@ async function tikzToPngBase64(tex, dark, settings) {
     proc.stdin?.end(tex, "utf8");
   });
   setCached(tex, dark, result, settings.maxMemoryCacheSize);
-  setDiskCache(tex, dark, result, settings.cacheDir, settings.maxCacheSize);
+  setDiskCache(tex, dark, result, effectiveCacheDir, settings.maxCacheSize);
   return result;
 }
 var YeQuiverSettingTab = class extends import_obsidian.PluginSettingTab {
@@ -416,8 +414,11 @@ var YeQuiverSettingTab = class extends import_obsidian.PluginSettingTab {
     const { containerEl } = this;
     containerEl.empty();
     const s = this.plugin.settings;
-    new import_obsidian.Setting(containerEl).setName("Cache directory").setDesc("Directory for rendered PNGs. Leave empty to disable disk cache. Default: ye-quiver-cache under system temp.").addText(
-      (text) => text.setPlaceholder(getDefaultCacheDir()).setValue(s.cacheDir || "").onChange((v) => {
+    const effectiveDir = this.plugin.getEffectiveCacheDir();
+    new import_obsidian.Setting(containerEl).setName("Cache directory").setDesc(
+      effectiveDir ? `Directory for rendered PNGs. Leave empty to use default. Current: ${effectiveDir}` : "Directory for rendered PNGs. Leave empty to use default. Current: (unavailable \u2014 disk cache disabled)"
+    ).addText(
+      (text) => text.setPlaceholder(effectiveDir || "vault/.obsidian/plugins/ye-quiver/cache").setValue(s.cacheDir || "").onChange((v) => {
         s.cacheDir = v.trim();
         this.plugin.saveData(s);
       })
@@ -449,7 +450,7 @@ var YeQuiverSettingTab = class extends import_obsidian.PluginSettingTab {
     const countSetting = new import_obsidian.Setting(containerEl).setName("Current cache").setDesc("");
     const countDesc = countSetting.descEl;
     const updateCount = () => {
-      const diskN = getDiskCacheCount(s.cacheDir);
+      const diskN = getDiskCacheCount(this.plugin.getEffectiveCacheDir());
       const memN = getMemoryCacheCount();
       countDesc.setText(`${diskN} on disk, ${memN} in memory`);
     };
@@ -457,7 +458,7 @@ var YeQuiverSettingTab = class extends import_obsidian.PluginSettingTab {
     new import_obsidian.Setting(containerEl).setName("Clear cache").setDesc("Clear in-memory cache and delete all cached images from the cache directory.").addButton(
       (btn) => btn.setButtonText("Clear").onClick(() => {
         clearMemoryCache();
-        const diskRemoved = clearDiskCache(s.cacheDir);
+        const diskRemoved = clearDiskCache(this.plugin.getEffectiveCacheDir());
         updateCount();
         new import_obsidian.Notice(`Cache cleared (${diskRemoved} removed from disk).`);
       })
@@ -469,9 +470,24 @@ var YeQuiverPlugin = class extends import_obsidian.Plugin {
     super(app, manifest);
     this.settings = { ...DEFAULT_SETTINGS };
   }
+  /** 实际使用的 cache 目录：若设置了则用设置值，否则为 Obsidian 库内插件目录下的 cache；若取不到则回退到 getPluginDir（如开发环境）。 */
+  getEffectiveCacheDir() {
+    if (this.settings.cacheDir.trim()) return this.settings.cacheDir;
+    const path = require("path");
+    let dir = getObsidianPluginRoot(this.app, this.manifest);
+    if (!dir) dir = getPluginDir(this.app, this.manifest);
+    return dir ? path.join(dir, "cache") : "";
+  }
   async loadSettings() {
     const data = await this.loadData();
     if (data) this.settings = { ...DEFAULT_SETTINGS, ...data };
+    try {
+      const path = require("path");
+      const os = require("os");
+      const oldDefault = path.join(os.tmpdir(), "ye-quiver-cache");
+      if (this.settings.cacheDir === oldDefault) this.settings.cacheDir = "";
+    } catch (_) {
+    }
     await this.saveData(this.settings);
   }
   openPluginSettings() {
@@ -494,6 +510,15 @@ var YeQuiverPlugin = class extends import_obsidian.Plugin {
       console.warn("ye-quiver: loadSettings failed", e);
       this.settings = { ...DEFAULT_SETTINGS };
     }
+    try {
+      this.doOnload();
+    } catch (e) {
+      console.error("ye-quiver: onload failed", e);
+      new import_obsidian.Notice("ye-quiver failed to load: " + (e?.message || String(e)));
+      throw e;
+    }
+  }
+  doOnload() {
     this.addSettingTab(new YeQuiverSettingTab(this.app, this));
     this.addRibbonIcon("settings", "ye-quiver settings", () => this.openPluginSettings());
     const statusBar = this.addStatusBarItem();
@@ -511,22 +536,30 @@ var YeQuiverPlugin = class extends import_obsidian.Plugin {
       name: "Clear ye-quiver cache",
       callback: () => {
         clearMemoryCache();
-        const n = clearDiskCache(this.settings.cacheDir);
+        const n = clearDiskCache(this.getEffectiveCacheDir());
         new import_obsidian.Notice(`Cache cleared (${n} removed from disk).`);
       }
     });
-    const pluginDir = getPluginDir(this.app, this.manifest);
+    let pluginDir = null;
+    try {
+      pluginDir = getPluginDir(this.app, this.manifest);
+    } catch (_) {
+      console.warn("ye-quiver: getPluginDir failed");
+    }
     if (!pluginDir) {
       console.warn("ye-quiver: could not resolve plugin directory");
     }
     if (!NODE_MODULES_AVAILABLE) {
       console.warn("ye-quiver: child_process not available (e.g. mobile). TikZ blocks will show a message.");
     }
-    const path = require("path");
-    const fs = require("fs");
-    const stylesPath = path.join(pluginDir || "", "styles.css");
-    if (pluginDir && fs.existsSync(stylesPath)) {
-      this.addStyleSheet(stylesPath);
+    try {
+      const path = require("path");
+      const fs = require("fs");
+      const stylesPath = path.join(pluginDir || "", "styles.css");
+      if (pluginDir && fs.existsSync(stylesPath) && typeof this.addStyleSheet === "function") {
+        this.addStyleSheet(stylesPath);
+      }
+    } catch (_) {
     }
     const plugin = this;
     const renderOne = async (container, source) => {
@@ -535,7 +568,7 @@ var YeQuiverPlugin = class extends import_obsidian.Plugin {
       const dark = isDarkMode();
       const loading = container.createDiv({ cls: "ye-quiver-loading", text: "Rendering TikZ\u2026" });
       try {
-        const base64 = await tikzToPngBase64(tex, dark, plugin.settings);
+        const base64 = await tikzToPngBase64(tex, dark, plugin.settings, plugin.getEffectiveCacheDir());
         loading.remove();
         const img = container.createEl("img", {
           attr: {
@@ -549,7 +582,7 @@ var YeQuiverPlugin = class extends import_obsidian.Plugin {
           if (displayStyle.transform) img.style.transformOrigin = "top left";
         }
         if (plugin.settings.preGenerateOtherTheme) {
-          void tikzToPngBase64(tex, !dark, plugin.settings).catch(() => {
+          void tikzToPngBase64(tex, !dark, plugin.settings, plugin.getEffectiveCacheDir()).catch(() => {
           });
         }
       } catch (err) {
@@ -620,7 +653,7 @@ var YeQuiverPlugin = class extends import_obsidian.Plugin {
           const tikz = params.tikz && params.tikz.trim() ? params.tikz.trim() : TEST_TIKZ;
           const dark = params.dark === "true" || params.dark === "1";
           try {
-            await tikzToPngBase64(tikz, dark, plugin.settings);
+            await tikzToPngBase64(tikz, dark, plugin.settings, plugin.getEffectiveCacheDir());
             return "OK";
           } catch (err) {
             return "FAIL: " + (err?.message || String(err));
