@@ -87,6 +87,7 @@ function isDarkMode() {
 }
 function parseDisplayOptions(source) {
   const style = {};
+  let name;
   let tex = source;
   const lines = source.split("\n");
   let i = 0;
@@ -103,10 +104,10 @@ function parseDisplayOptions(source) {
     else if (key === "scale") {
       const n = parseFloat(val);
       if (!isNaN(n) && n > 0) style.transform = `scale(${n})`;
-    }
+    } else if (key === "name" || key === "caption") name = val;
   }
   if (i > 0) tex = lines.slice(i).join("\n").trim();
-  return { tex, style };
+  return { tex, style, name };
 }
 function encodeSourceForAttr(source) {
   try {
@@ -564,7 +565,7 @@ var YeQuiverPlugin = class extends import_obsidian.Plugin {
     const plugin = this;
     const renderOne = async (container, source) => {
       while (container.firstChild) container.removeChild(container.firstChild);
-      const { tex, style: displayStyle } = parseDisplayOptions(source);
+      const { tex, style: displayStyle, name: captionText } = parseDisplayOptions(source);
       const dark = isDarkMode();
       const loading = container.createDiv({ cls: "ye-quiver-loading", text: "Rendering TikZ\u2026" });
       try {
@@ -580,6 +581,15 @@ var YeQuiverPlugin = class extends import_obsidian.Plugin {
         if (Object.keys(displayStyle).length > 0) {
           Object.assign(img.style, displayStyle);
           if (displayStyle.transform) img.style.transformOrigin = "top left";
+        }
+        if (captionText && captionText.trim()) {
+          const captionEl = container.createDiv({ cls: "ye-quiver-caption" });
+          const sourcePath = container.getAttribute("data-ye-quiver-source-path") || "";
+          try {
+            await import_obsidian.MarkdownRenderer.render(plugin.app, captionText.trim(), captionEl, sourcePath, plugin);
+          } catch (_) {
+            captionEl.setText(captionText.trim());
+          }
         }
         if (plugin.settings.preGenerateOtherTheme) {
           void tikzToPngBase64(tex, !dark, plugin.settings, plugin.getEffectiveCacheDir()).catch(() => {
@@ -615,6 +625,7 @@ var YeQuiverPlugin = class extends import_obsidian.Plugin {
     this.registerMarkdownCodeBlockProcessor("ye-quiver", async (source, el, ctx) => {
       const container = el.createDiv({ cls: "ye-quiver-container" });
       container.setAttribute("data-ye-quiver-source", encodeSourceForAttr(source.trim()));
+      container.setAttribute("data-ye-quiver-source-path", ctx.sourcePath || "");
       if (!NODE_MODULES_AVAILABLE) {
         container.createDiv({
           cls: "ye-quiver-error",
