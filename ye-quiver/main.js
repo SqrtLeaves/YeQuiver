@@ -127,6 +127,20 @@ function decodeSourceFromAttr(encoded) {
     return "";
   }
 }
+function isCursorInYeQuiverBlock(value, cursorLine) {
+  const lines = value.split(/\r?\n/);
+  for (let i = 0; i < lines.length; i++) {
+    const t = lines[i].trim();
+    if (!(t.startsWith("```") && /^```\s*ye-quiver\s*$/.test(t))) continue;
+    for (let j = i + 1; j < lines.length; j++) {
+      if (lines[j].trim() === "```") {
+        return cursorLine > i && cursorLine < j;
+      }
+    }
+    return cursorLine > i;
+  }
+  return false;
+}
 function createYeQuiverHighlightPlugin(ViewPlugin, Decoration, RangeSetBuilder) {
   const blockRe = /^```ye-quiver\r?\n([\s\S]*?)^```$/gm;
   const commandRe = /\\([a-zA-Z@]+)/g;
@@ -678,6 +692,18 @@ var YeQuiverPlugin = class extends import_obsidian.Plugin {
     } catch (_) {
       console.warn("ye-quiver: editor syntax highlighting not available (CodeMirror view/state)");
     }
+    this.registerEvent(
+      this.app.workspace.on("editor-paste", (evt, editor) => {
+        if (evt.defaultPrevented) return;
+        const value = editor.getValue();
+        const cursor = editor.getCursor();
+        if (!isCursorInYeQuiverBlock(value, cursor.line)) return;
+        const text = evt.clipboardData?.getData("text/plain");
+        if (text == null) return;
+        evt.preventDefault();
+        editor.replaceSelection(text);
+      })
+    );
     this.registerMarkdownCodeBlockProcessor("ye-quiver", async (source, el, ctx) => {
       const container = el.createDiv({ cls: "ye-quiver-container" });
       container.setAttribute("data-ye-quiver-source", encodeSourceForAttr(source.trim()));

@@ -117,6 +117,22 @@ function decodeSourceFromAttr(encoded: string): string {
   }
 }
 
+/** True if the given line index (0-based) is inside a ```ye-quiver ... ``` block. */
+function isCursorInYeQuiverBlock(value: string, cursorLine: number): boolean {
+  const lines = value.split(/\r?\n/);
+  for (let i = 0; i < lines.length; i++) {
+    const t = lines[i].trim();
+    if (!(t.startsWith("```") && /^```\s*ye-quiver\s*$/.test(t))) continue;
+    for (let j = i + 1; j < lines.length; j++) {
+      if (lines[j].trim() === "```") {
+        return cursorLine > i && cursorLine < j;
+      }
+    }
+    return cursorLine > i;
+  }
+  return false;
+}
+
 /** 为编辑器中 ```ye-quiver 代码块内容添加 TeX 风格语法高亮；node/arrow 的 label 单独高亮便于查找 */
 function createYeQuiverHighlightPlugin(
   ViewPlugin: any,
@@ -771,6 +787,19 @@ export default class YeQuiverPlugin extends Plugin {
     } catch (_) {
       console.warn("ye-quiver: editor syntax highlighting not available (CodeMirror view/state)");
     }
+
+    this.registerEvent(
+      this.app.workspace.on("editor-paste", (evt: ClipboardEvent, editor: any) => {
+        if (evt.defaultPrevented) return;
+        const value = editor.getValue();
+        const cursor = editor.getCursor();
+        if (!isCursorInYeQuiverBlock(value, cursor.line)) return;
+        const text = evt.clipboardData?.getData("text/plain");
+        if (text == null) return;
+        evt.preventDefault();
+        editor.replaceSelection(text);
+      })
+    );
 
     this.registerMarkdownCodeBlockProcessor("ye-quiver", async (source, el, ctx) => {
       const container = el.createDiv({ cls: "ye-quiver-container" });
