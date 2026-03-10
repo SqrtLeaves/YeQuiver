@@ -117,7 +117,7 @@ function decodeSourceFromAttr(encoded: string): string {
   }
 }
 
-/** 为编辑器中 ```ye-quiver 代码块内容添加 TeX 风格语法高亮 */
+/** 为编辑器中 ```ye-quiver 代码块内容添加 TeX 风格语法高亮；node/arrow 的 label 单独高亮便于查找 */
 function createYeQuiverHighlightPlugin(
   ViewPlugin: any,
   Decoration: any,
@@ -128,6 +128,13 @@ function createYeQuiverHighlightPlugin(
   const stringRe = /"([^"\\]|\\.)*"/g;
   const commentRe = /%.*$/gm;
   const bracketRe = /[{}[\]]/g;
+  /** Arrow label: first quoted string inside \arrow[...] */
+  const arrowLabelRe = /\\arrow\s*\[\s*"((?:[^"\\]|\\.)*)"/g;
+  /** Node label: content inside {...} without '='; only exclude {tikzcd} (environment name) */
+  const nodeLabelRe = /\{([^{}=]+)\}/g;
+  function isNodeLabel(content: string): boolean {
+    return content.trim().toLowerCase() !== "tikzcd";
+  }
 
   class PluginValue {
     decorations: any;
@@ -145,8 +152,8 @@ function createYeQuiverHighlightPlugin(
       while ((m = blockRe.exec(doc)) !== null) {
         const contentStart = m.index + (m[0].indexOf("\n") + 1);
         const content = m[1];
-        const contentEnd = contentStart + content.length;
         const marks: Array<{ from: number; to: number; class: string }> = [];
+
         function add(re: RegExp, cls: string) {
           re.lastIndex = 0;
           let r;
@@ -158,11 +165,47 @@ function createYeQuiverHighlightPlugin(
             });
           }
         }
+        function addCapture(re: RegExp, cls: string) {
+          re.lastIndex = 0;
+          let r;
+          while ((r = re.exec(content)) !== null) {
+            if (r[1] != null) {
+              const start = r[0].indexOf(r[1]);
+              if (start >= 0) {
+                marks.push({
+                  from: contentStart + r.index + start,
+                  to: contentStart + r.index + start + r[1].length,
+                  class: cls,
+                });
+              }
+            }
+          }
+        }
+        function addNodeLabel() {
+          nodeLabelRe.lastIndex = 0;
+          let r;
+          while ((r = nodeLabelRe.exec(content)) !== null) {
+            if (r[1] != null && isNodeLabel(r[1])) {
+              const start = r[0].indexOf(r[1]);
+              if (start >= 0) {
+                marks.push({
+                  from: contentStart + r.index + start,
+                  to: contentStart + r.index + start + r[1].length,
+                  class: "yq-label",
+                });
+              }
+            }
+          }
+        }
+
         add(commentRe, "yq-comment");
         add(stringRe, "yq-string");
         add(commandRe, "yq-command");
         add(bracketRe, "yq-bracket");
-        marks.sort((a, b) => a.from - b.from);
+        addCapture(arrowLabelRe, "yq-label");
+        addNodeLabel();
+
+        marks.sort((a, b) => a.from - b.from || a.to - a.from - (b.to - b.from));
         let last = contentStart;
         for (const { from, to, class: cls } of marks) {
           if (from >= last) {

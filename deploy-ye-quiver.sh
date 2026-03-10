@@ -10,8 +10,8 @@
 set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
-DEST="${DEST:-/Users/leaves/BAIDU_SYNC/Obsidian/MATH/.obsidian/plugins/ye-quiver}"
-# DEST="${DEST:-/Users/leaves/同步空间/Obsidian/MATH/.obsidian/plugins/ye-quiver}"
+# DEST="${DEST:-/Users/leaves/BAIDU_SYNC/Obsidian/MATH/.obsidian/plugins/ye-quiver}"
+DEST="${DEST:-/Users/leaves/同步空间/Obsidian/MATH/.obsidian/plugins/ye-quiver}"
 
 echo "Build ye-quiver..."
 cd ye-quiver

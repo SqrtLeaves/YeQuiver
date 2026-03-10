@@ -47,3 +47,11 @@
 .cm-line .yq-bracket {
   color: var(--text-muted);
 }
+/* node / arrow label：醒目颜色便于快速定位 */
+.cm-line .yq-label {
+  color: var(--color-green);
+  font-weight: 600;
+}
+.theme-dark .cm-line .yq-label {
+  color: var(--color-cyan);
+}

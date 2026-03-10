@@ -133,6 +133,11 @@ function createYeQuiverHighlightPlugin(ViewPlugin, Decoration, RangeSetBuilder) 
   const stringRe = /"([^"\\]|\\.)*"/g;
   const commentRe = /%.*$/gm;
   const bracketRe = /[{}[\]]/g;
+  const arrowLabelRe = /\\arrow\s*\[\s*"((?:[^"\\]|\\.)*)"/g;
+  const nodeLabelRe = /\{([^{}=]+)\}/g;
+  function isNodeLabel(content) {
+    return content.trim().toLowerCase() !== "tikzcd";
+  }
   class PluginValue {
     constructor(view) {
       this.view = view;
@@ -157,17 +162,48 @@ function createYeQuiverHighlightPlugin(ViewPlugin, Decoration, RangeSetBuilder) 
               class: cls
             });
           }
+        }, addCapture2 = function(re, cls) {
+          re.lastIndex = 0;
+          let r;
+          while ((r = re.exec(content)) !== null) {
+            if (r[1] != null) {
+              const start = r[0].indexOf(r[1]);
+              if (start >= 0) {
+                marks.push({
+                  from: contentStart + r.index + start,
+                  to: contentStart + r.index + start + r[1].length,
+                  class: cls
+                });
+              }
+            }
+          }
+        }, addNodeLabel2 = function() {
+          nodeLabelRe.lastIndex = 0;
+          let r;
+          while ((r = nodeLabelRe.exec(content)) !== null) {
+            if (r[1] != null && isNodeLabel(r[1])) {
+              const start = r[0].indexOf(r[1]);
+              if (start >= 0) {
+                marks.push({
+                  from: contentStart + r.index + start,
+                  to: contentStart + r.index + start + r[1].length,
+                  class: "yq-label"
+                });
+              }
+            }
+          }
         };
-        var add = add2;
+        var add = add2, addCapture = addCapture2, addNodeLabel = addNodeLabel2;
         const contentStart = m.index + (m[0].indexOf("\n") + 1);
         const content = m[1];
-        const contentEnd = contentStart + content.length;
         const marks = [];
         add2(commentRe, "yq-comment");
         add2(stringRe, "yq-string");
         add2(commandRe, "yq-command");
         add2(bracketRe, "yq-bracket");
-        marks.sort((a, b) => a.from - b.from);
+        addCapture2(arrowLabelRe, "yq-label");
+        addNodeLabel2();
+        marks.sort((a, b) => a.from - b.from || a.to - a.from - (b.to - b.from));
         let last = contentStart;
         for (const { from, to, class: cls } of marks) {
           if (from >= last) {
