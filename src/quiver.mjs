@@ -397,24 +397,43 @@ QuiverImportExport.tikz_cd = new class extends QuiverImportExport {
         // necessary to escape the ampersand when using TikZ diagrams in a nested context.
         const ampersand = settings.get("export.ampersand_replacement") ? "\\&" : "&";
 
-        // If a label is particularly simple (containing no special symbols), we do not need to
-        // surround it in curly brackets. This is preferable, because simpler output is more
-        // readable. In general, we need to use curly brackets to avoid LaTeX errors. For instance,
-        // `[a]` is invalid: we must use `{[a]}` instead.
-        const simple_label = /^\\?[a-zA-Z0-9]+$/;
+        // Only wrap label in curly brackets when it contains characters that would break tikz-cd
+        // (e.g. `[a]` is invalid: use `{[a]}`). Do not wrap for superscripts like f^{X}.
+        const needs_braces = (s) => /[[\]"]/.test(s);
 
-        // Adapt a label to be appropriate for TikZ output, by surrounding it in curly brackets when
-        // necessary, and using `\array` for newlines.
+        // True if label is of the form { ... } with balanced braces.
+        const has_outer_braces = (s) => {
+            if (s.length < 2 || s[0] !== "{" || s[s.length - 1] !== "}") return false;
+            let depth = 0;
+            for (let i = 1; i < s.length - 1; i++) {
+                if (s[i] === "{") depth++;
+                else if (s[i] === "}") { depth--; if (depth < 0) return false; }
+            }
+            return depth === 0;
+        };
+        const strip_outer_braces_once = (s) => {
+            if (!has_outer_braces(s)) return s;
+            return s.slice(1, -1);
+        };
+        // Strip all redundant outer brace layers (e.g. "{{f^{X}}}" -> "f^{X}").
+        const strip_outer_braces = (s) => {
+            let t = s;
+            while (has_outer_braces(t)) t = strip_outer_braces_once(t);
+            return t;
+        };
+
+        // Adapt a label to be appropriate for TikZ output. Add curly brackets only when necessary
+        // (label contains [, ], or "). If label is already wrapped in braces (e.g. "{f^{X}}" from
+        // a previous export), strip them so we output "f^{X}" not "{f^{X}}".
         const format_label = (label) => {
             if (label.includes("\\\\")) {
-                // The label may contain a newline. In this case, we place the label inside a table,
-                // which is permitted to contain newlines.
                 return `\\begin{array}{c} ${label} \\end{array}`;
             }
-            if (!simple_label.test(label)) {
-                return `{${label}}`;
+            const normalised = strip_outer_braces(label);
+            if (needs_braces(normalised)) {
+                return `{${normalised}}`;
             }
-            return label;
+            return normalised;
         };
 
         // We handle the export in two stages: vertices and edges. These are fundamentally handled

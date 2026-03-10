@@ -724,8 +724,19 @@ export class Parser {
         }
         // Parse label.
         if (this.eat("\"")) {
-            const label = this.eat(/[^"]*/);
+            let label = this.eat(/[^"]*/);
             this.eat("\"", true);
+            // Strip all redundant outer brace layers (so Import → Export round-trip doesn't accumulate braces).
+            while (label.length >= 2 && label[0] === "{" && label[label.length - 1] === "}") {
+                let depth = 0;
+                let balanced = true;
+                for (let i = 1; i < label.length - 1; i++) {
+                    if (label[i] === "{") depth++;
+                    else if (label[i] === "}") { depth--; if (depth < 0) { balanced = false; break; } }
+                }
+                if (!balanced || depth !== 0) break;
+                label = label.slice(1, -1);
+            }
             edge.label = label;
             while (this.eat("'")) {
                 swap_label_alignment();
