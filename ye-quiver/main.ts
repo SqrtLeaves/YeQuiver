@@ -9,11 +9,17 @@ const PLUGIN_ID = "ye-quiver";
 
 const MANIFEST_FILENAME = "cache-manifest.json";
 
+const DPI_MIN = 72;
+const DPI_MAX = 600;
+const DPI_DEFAULT = 300;
+
 export interface YeQuiverSettings {
   cacheDir: string;
   maxCacheSize: number;
   maxMemoryCacheSize: number;
   preGenerateOtherTheme: boolean;
+  /** 生成 PNG 的 DPI，越大越清晰、文件越大。72–600 */
+  dpi: number;
 }
 
 const DEFAULT_SETTINGS: YeQuiverSettings = {
@@ -21,6 +27,7 @@ const DEFAULT_SETTINGS: YeQuiverSettings = {
   maxCacheSize: 1000,
   maxMemoryCacheSize: 30,
   preGenerateOtherTheme: true,
+  dpi: DPI_DEFAULT,
 };
 const NODE_MODULES_AVAILABLE: boolean = (() => {
   try {
@@ -210,11 +217,9 @@ function getAssetDir(): string {
     const cliPath = path.join(base, "index.mjs");
     const styDir = path.join(base, "package");
     const styPath = path.join(styDir, "quiver.sty");
-    if (!fs.existsSync(cliPath) || !fs.existsSync(styPath)) {
-      fs.mkdirSync(styDir, { recursive: true });
-      fs.writeFileSync(cliPath, EMBEDDED_CLI_SOURCE, "utf8");
-      fs.writeFileSync(styPath, EMBEDDED_QUIVER_STY, "utf8");
-    }
+    fs.mkdirSync(styDir, { recursive: true });
+    fs.writeFileSync(cliPath, EMBEDDED_CLI_SOURCE, "utf8");
+    fs.writeFileSync(styPath, EMBEDDED_QUIVER_STY, "utf8");
     return base;
   } catch {
     const fallback = fs.mkdtempSync(path.join(os.tmpdir(), "ye-quiver-"));
@@ -225,12 +230,12 @@ function getAssetDir(): string {
   }
 }
 
-function cacheKey(tex: string, dark: boolean): string {
-  return (dark ? "1" : "0") + "\n" + tex;
+function cacheKey(tex: string, dark: boolean, dpi: number): string {
+  return String(dpi) + "\n" + (dark ? "1" : "0") + "\n" + tex;
 }
 
-function getCached(tex: string, dark: boolean): string | null {
-  const key = cacheKey(tex, dark);
+function getCached(tex: string, dark: boolean, dpi: number): string | null {
+  const key = cacheKey(tex, dark, dpi);
   const b64 = renderCache.get(key);
   if (b64 != null) {
     const idx = renderCacheKeys.indexOf(key);
@@ -243,8 +248,8 @@ function getCached(tex: string, dark: boolean): string | null {
   return null;
 }
 
-function setCached(tex: string, dark: boolean, base64: string, maxSize: number): void {
-  const key = cacheKey(tex, dark);
+function setCached(tex: string, dark: boolean, dpi: number, base64: string, maxSize: number): void {
+  const key = cacheKey(tex, dark, dpi);
   if (renderCache.has(key)) {
     const idx = renderCacheKeys.indexOf(key);
     if (idx >= 0) renderCacheKeys.splice(idx, 1);
@@ -266,14 +271,17 @@ function clearMemoryCache(): void {
   renderCacheKeys.length = 0;
 }
 
-/** 磁盘缓存：根据 (tex, dark) 生成唯一文件名（不含扩展名）。 */
-function diskCacheFileKey(tex: string, dark: boolean): string {
+/** 磁盘缓存：根据 (tex, dark, dpi) 生成唯一文件名（不含扩展名）。 */
+function diskCacheFileKey(tex: string, dark: boolean, dpi: number): string {
   try {
     const crypto = require("crypto");
-    const h = crypto.createHash("sha256").update(tex, "utf8").digest("hex").slice(0, 24);
-    return dark ? `${h}_d` : `${h}_l`;
+    const h = crypto.createHash("sha256").update(tex, "utf8").digest("hex").slice(0, 22);
+    const theme = dark ? "d" : "l";
+    return `${h}_${theme}_${dpi}`;
   } catch {
-    return (dark ? "d_" : "l_") + String(Math.abs((tex + tex.length).split("").reduce((a, c) => (a + c.charCodeAt(0)) | 0, 0)));
+    const theme = dark ? "d" : "l";
+    const fallback = String(Math.abs((tex + tex.length).split("").reduce((a, c) => (a + c.charCodeAt(0)) | 0, 0)));
+    return `${theme}_${fallback}_${dpi}`;
   }
 }
 
@@ -299,11 +307,11 @@ function saveDiskManifest(cacheDir: string, manifest: ManifestData): void {
   fs.writeFileSync(p, JSON.stringify(manifest), "utf8");
 }
 
-function getDiskCached(tex: string, dark: boolean, cacheDir: string): string | null {
+function getDiskCached(tex: string, dark: boolean, dpi: number, cacheDir: string): string | null {
   if (!cacheDir) return null;
   const fs = require("fs");
   const path = require("path");
-  const key = diskCacheFileKey(tex, dark);
+  const key = diskCacheFileKey(tex, dark, dpi);
   const filePath = path.join(cacheDir, key + ".png");
   if (!fs.existsSync(filePath)) return null;
   try {
@@ -314,12 +322,12 @@ function getDiskCached(tex: string, dark: boolean, cacheDir: string): string | n
   }
 }
 
-function setDiskCache(tex: string, dark: boolean, base64: string, cacheDir: string, maxSize: number): void {
+function setDiskCache(tex: string, dark: boolean, dpi: number, base64: string, cacheDir: string, maxSize: number): void {
   if (!cacheDir || maxSize < 1) return;
   const fs = require("fs");
   const path = require("path");
   if (!fs.existsSync(cacheDir)) fs.mkdirSync(cacheDir, { recursive: true });
-  const key = diskCacheFileKey(tex, dark);
+  const key = diskCacheFileKey(tex, dark, dpi);
   const filePath = path.join(cacheDir, key + ".png");
   const buf = Buffer.from(base64, "base64");
   fs.writeFileSync(filePath, buf);
@@ -367,12 +375,17 @@ function clearDiskCache(cacheDir: string): number {
   return n;
 }
 
+function clampDpi(n: number): number {
+  return Math.min(DPI_MAX, Math.max(DPI_MIN, Math.round(n)));
+}
+
 async function tikzToPngBase64(tex: string, dark: boolean, settings: YeQuiverSettings, effectiveCacheDir: string): Promise<string> {
-  const mem = getCached(tex, dark);
+  const dpi = clampDpi(settings.dpi);
+  const mem = getCached(tex, dark, dpi);
   if (mem != null) return mem;
-  const disk = getDiskCached(tex, dark, effectiveCacheDir);
+  const disk = getDiskCached(tex, dark, dpi, effectiveCacheDir);
   if (disk != null) {
-    setCached(tex, dark, disk, settings.maxMemoryCacheSize);
+    setCached(tex, dark, dpi, disk, settings.maxMemoryCacheSize);
     return disk;
   }
 
@@ -384,7 +397,7 @@ async function tikzToPngBase64(tex: string, dark: boolean, settings: YeQuiverSet
   const cliPath = path.join(base, "index.mjs");
   const styDir = path.join(base, "package");
 
-  const args = [cliPath, "--sty-dir", styDir, "--base64"];
+  const args = [cliPath, "--sty-dir", styDir, "--base64", "--dpi", String(dpi)];
   if (dark) args.push("--dark");
   const nodeCmd = getNodePath();
   const result = await new Promise<string>((resolve, reject) => {
@@ -422,8 +435,8 @@ async function tikzToPngBase64(tex: string, dark: boolean, settings: YeQuiverSet
     proc.stdin?.end(tex, "utf8");
   });
 
-  setCached(tex, dark, result, settings.maxMemoryCacheSize);
-  setDiskCache(tex, dark, result, effectiveCacheDir, settings.maxCacheSize);
+  setCached(tex, dark, dpi, result, settings.maxMemoryCacheSize);
+  setDiskCache(tex, dark, dpi, result, effectiveCacheDir, settings.maxCacheSize);
   return result;
 }
 
@@ -500,6 +513,22 @@ class YeQuiverSettingTab extends PluginSettingTab {
         })
       );
 
+    new Setting(containerEl)
+      .setName("Image DPI (resolution)")
+      .setDesc(`Clarity of generated PNGs. Higher = sharper and larger file. Range ${DPI_MIN}–${DPI_MAX}, default ${DPI_DEFAULT}.`)
+      .addText((text) =>
+        text
+          .setPlaceholder(String(DPI_DEFAULT))
+          .setValue(String(s.dpi))
+          .onChange((v) => {
+            const n = parseInt(v, 10);
+            if (!isNaN(n)) {
+              s.dpi = clampDpi(n);
+              this.plugin.saveData(s);
+            }
+          })
+      );
+
     const countSetting = new Setting(containerEl)
       .setName("Current cache")
       .setDesc("");
@@ -552,6 +581,8 @@ export default class YeQuiverPlugin extends Plugin {
       const oldDefault = path.join(os.tmpdir(), "ye-quiver-cache");
       if (this.settings.cacheDir === oldDefault) this.settings.cacheDir = "";
     } catch (_) {}
+    if (this.settings.dpi == null || isNaN(this.settings.dpi)) this.settings.dpi = DPI_DEFAULT;
+    this.settings.dpi = clampDpi(this.settings.dpi);
     await this.saveData(this.settings);
   }
 

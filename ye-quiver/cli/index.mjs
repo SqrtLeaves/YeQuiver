@@ -77,10 +77,13 @@ function wrapStandalone(tex, _dark = false, _bgRgb = null) {
   }
   // 透明背景：dark 用黑底+白字再「黑→透明」，light 用白底+黑字再「白→透明」
   // dark 时用 \color{white} 包裹整图，保证箭头与节点都为白色
+  // amsmath 提供 \text{}，用于节点/箭头标签中的文字（如 \text{op}）
+  // dark 时 description 等样式用 /tikz/commutative diagrams/background color（默认 white）填标签底，会白底白字；设为 black 后白字可见，导出时黑再透明
   const docParts = [
     _dark ? "\\documentclass[tikz,border=0pt]{standalone}" : "\\documentclass[tikz]{standalone}",
+    "\\usepackage{amsmath}",
     "\\usepackage{quiver}",
-    ...(_dark ? ["\\usepackage{xcolor}"] : []),
+    ...(_dark ? ["\\usepackage{xcolor}", "\\tikzcdset{background color=black}"] : []),
     "\\begin{document}",
     ...(_dark ? ["\\pagecolor{black}", "{\\color{white}", body, "}"] : [body]),
     "\\end{document}",
