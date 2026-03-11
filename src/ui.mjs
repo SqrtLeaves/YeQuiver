@@ -4727,6 +4727,10 @@ class Panel {
             if (this.port === null || this.port.kind !== kind || this.port.format !== format) {
                 ui.switch_mode(new UIMode.Modal());
 
+                // For LaTeX export: use selection if non-empty, otherwise export all. Fixed for this pane.
+                const export_selection = (kind === "export" && format === "tikz-cd" && ui.selection.size > 0)
+                    ? new Set(ui.selection) : null;
+
                 // Get the encoding of the diagram. The output may be modified by the caller.
                 const { data, metadata } = modify(kind === "import" ?
                     { data: "", metadata: null } :
@@ -4735,6 +4739,7 @@ class Panel {
                         ui.settings,
                         ui.options(),
                         ui.definitions(),
+                        export_selection,
                     )
                 );
 
@@ -4799,6 +4804,7 @@ class Panel {
                             ui.settings,
                             ui.options(),
                             ui.definitions(),
+                            export_selection,
                         ));
                         update_output(data);
                         // Update the label.
@@ -4970,6 +4976,7 @@ class Panel {
                                 ui.settings,
                                 ui.options(),
                                 ui.definitions(),
+                                export_selection,
                             ));
                             update_output(data);
                         });

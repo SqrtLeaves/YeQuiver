@@ -229,10 +229,11 @@ export class Quiver {
     /// `options` describes non-persistent user settings and diagram attributes (like the macro
     /// URL, and the dimensions of the diagram);
     /// `definitions` contains key-value pairs for macros and colours.
-    export(format, settings, options, definitions) {
+    /// When `selection` is provided and non-empty, only those cells are exported; otherwise export all.
+    export(format, settings, options, definitions, selection = null) {
         switch (format) {
             case "tikz-cd":
-                return QuiverImportExport.tikz_cd.export(this, settings, options, definitions);
+                return QuiverImportExport.tikz_cd.export(this, settings, options, definitions, selection);
             case "fletcher":
                 return QuiverExport.fletcher.export(this, settings, options, definitions);
             case "base64":
@@ -324,8 +325,22 @@ QuiverExport.CONSTANTS = {
 };
 
 QuiverImportExport.tikz_cd = new class extends QuiverImportExport {
-    export(quiver, settings, options, definitions) {
+    /// When `selection` is provided and non-empty, only export those cells; otherwise export all.
+    export(quiver, settings, options, definitions, selection = null) {
         let output = "";
+
+        const export_cells = (selection != null && selection.size > 0)
+            ? (() => {
+                const set = new Set(selection);
+                for (const cell of selection) {
+                    if (cell.is_edge()) {
+                        set.add(cell.source);
+                        set.add(cell.target);
+                    }
+                }
+                return set;
+            })()
+            : null;
 
         // Wrap tikz-cd code with `\begin{tikzcd} ... \end{tikzcd}`.
         const wrap_boilerplate = (output) => {
@@ -457,9 +472,10 @@ QuiverImportExport.tikz_cd = new class extends QuiverImportExport {
         // as in that case they will be overwritten.
         let offset = new Position(Infinity, Infinity);
         let extent = new Position(-Infinity, -Infinity);
-        // Construct a grid for the vertices.
+        // Construct a grid for the vertices (optionally restricted to export_cells).
         const rows = new Map();
         for (const vertex of quiver.cells[0]) {
+            if (export_cells !== null && !export_cells.has(vertex)) continue;
             if (!rows.has(vertex.position.y)) {
                 rows.set(vertex.position.y, new Map());
             }
@@ -538,7 +554,9 @@ QuiverImportExport.tikz_cd = new class extends QuiverImportExport {
 
             // Sort the edges so that we iterate through based on source (top-to-bottom,
             // left-to-right), and then target.
-            const edges = [...quiver.cells[level]];
+            const edges = export_cells !== null
+                ? [...quiver.cells[level]].filter((e) => export_cells.has(e))
+                : [...quiver.cells[level]];
             const compare_cell_position = (a, b) => {
                 if (a.position.y < b.position.y) {
                     return -1;
