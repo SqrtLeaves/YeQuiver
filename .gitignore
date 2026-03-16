@@ -3,3 +3,4 @@ src/Workbox/*
 src/workbox-*
 src/service-worker.js*
 src/icon-*.png
+quick_latex_obsidian/*
