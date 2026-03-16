@@ -732,6 +732,10 @@ class UI {
         // The URL from which the macros have been fetched (if at all).
         this.macro_url = null;
 
+        this.quick_latex_raw = null;
+        this.quick_latex_entries = null;
+        this.quick_latex_loading = null;
+
         // The user settings, which are stored persistently across sessions in `localStorage`.
         this.settings = new Settings();
     }
@@ -799,6 +803,73 @@ class UI {
             dimensions: this.diagram_size(),
             sep: this.panel.sep,
         };
+    }
+
+    load_quick_latex_bindings() {
+        if (this.quick_latex_loading !== null) {
+            return this.quick_latex_loading;
+        }
+        this.quick_latex_loading = fetch("quick_latex_binding.txt", { cache: "no-store" })
+            .then((response) => {
+                if (!response.ok) {
+                    throw new Error("Failed to load quick_latex_binding.txt");
+                }
+                return response.text();
+            })
+            .then((text) => {
+                this.quick_latex_raw = text;
+                const entries = {};
+                let current_key = null;
+                let buffer = [];
+                const flush = () => {
+                    if (current_key !== null) {
+                        const joined = buffer.join("\n");
+                        entries[current_key] = joined;
+                    }
+                    current_key = null;
+                    buffer = [];
+                };
+                for (const line of text.split("\n")) {
+                    const trimmed = line.trim();
+                    if (trimmed === "" || trimmed.startsWith("%")) {
+                        continue;
+                    }
+                    if (current_key === null) {
+                        const idx = trimmed.indexOf(":");
+                        if (idx <= 0) {
+                            continue;
+                        }
+                        const key = trimmed.slice(0, idx);
+                        let rest = trimmed.slice(idx + 1);
+                        const sep = rest.lastIndexOf(";");
+                        if (sep >= 0) {
+                            const snippet = rest.slice(0, sep);
+                            entries[key] = snippet;
+                            continue;
+                        }
+                        current_key = key;
+                        buffer.push(rest);
+                    } else {
+                        const sep = trimmed.lastIndexOf(";");
+                        if (sep >= 0) {
+                            buffer.push(trimmed.slice(0, sep));
+                            flush();
+                        } else {
+                            buffer.push(trimmed);
+                        }
+                    }
+                }
+                flush();
+                this.quick_latex_entries = entries;
+            })
+            .catch(() => {
+                this.quick_latex_raw = null;
+                this.quick_latex_entries = {};
+            })
+            .finally(() => {
+                this.quick_latex_loading = null;
+            });
+        return this.quick_latex_loading;
     }
 
     initialise() {
@@ -3998,6 +4069,90 @@ class Panel {
             disabled: true,
         });
 
+        const expand_quick_latex = (options = {}) => {
+            const keep_trailing_space = options.keep_trailing_space === true;
+            if (ui.in_mode(UIMode.Command)) {
+                return false;
+            }
+            const input = this.label_input.element;
+            const value = input.value;
+            let caret = input.selectionStart;
+            if (caret === null || caret === undefined) {
+                return false;
+            }
+
+            const entries = ui.quick_latex_entries || {};
+
+            // When triggered by a space that has already been inserted, we want to
+            // ignore the trailing space when detecting the shorthand, but usually
+            // keep the space after expansion.
+            if (keep_trailing_space) {
+                if (caret === 0 || value[caret - 1] !== " ") {
+                    return false;
+                }
+                caret = caret - 1;
+            }
+
+            const before = value.slice(0, caret);
+            const token_match = before.match(/(^|[^A-Za-z])([A-Za-z]+)$/);
+            if (token_match === null) {
+                return false;
+            }
+            const prefix = token_match[2];
+            const prefix_start = caret - prefix.length;
+            const previous_char = prefix_start > 0 ? value[prefix_start - 1] : "";
+            if (/[A-Za-z]/.test(previous_char)) {
+                return false;
+            }
+
+            const snippet = entries[prefix];
+            if (!snippet) {
+                return false;
+            }
+
+            const raw = snippet;
+            let replacement = raw;
+            let caret_offset_in_replacement = null;
+
+            const cursor_index = raw.indexOf("#cursor");
+            if (cursor_index !== -1) {
+                const before_cursor_raw = raw.slice(0, cursor_index);
+                const before_cursor_visible = before_cursor_raw.replace(/#tab/g, "");
+                caret_offset_in_replacement = before_cursor_visible.length;
+                if (caret_offset_in_replacement > 0) {
+                    caret_offset_in_replacement -= 1;
+                }
+                replacement = raw.replace("#cursor", "");
+            } else {
+                replacement = raw;
+            }
+
+            replacement = replacement.replace(/#tab/g, "");
+
+            if (caret_offset_in_replacement === null) {
+                const brace_index = replacement.indexOf("{}");
+                if (brace_index !== -1) {
+                    caret_offset_in_replacement = brace_index + 1;
+                } else {
+                    caret_offset_in_replacement = replacement.length;
+                }
+            }
+
+            let inserted = replacement;
+            if (keep_trailing_space) {
+                inserted += " ";
+            }
+            const prefix_text = value.slice(0, prefix_start);
+            const suffix_text = value.slice(keep_trailing_space ? caret + 1 : caret);
+            const new_value = prefix_text + inserted + suffix_text;
+
+            const caret_pos = prefix_start + caret_offset_in_replacement;
+            input.value = new_value;
+            input.setSelectionRange(caret_pos, caret_pos);
+            input.dispatchEvent(new Event("input", { bubbles: true }));
+            return true;
+        };
+
         // Prevent propagation of scrolling when the cursor is over the label input.
         // This allows the user to scroll the label input text when not all the content fits.
         this.label_input.listen("wheel", (event) => {
@@ -4013,7 +4168,30 @@ class Panel {
 
         // Handle label interaction: update the labels of the selected cells when
         // the input field is modified.
+        this.label_input.listen("keydown", (event) => {
+            if (event.key === "Tab") {
+                ui.load_quick_latex_bindings().then(() => {
+                    if (expand_quick_latex({ keep_trailing_space: false })) {
+                        event.preventDefault();
+                        event.stopPropagation();
+                    }
+                });
+            } else if (event.key === " ") {
+                // Defer space-triggered expansion until after the space has been
+                // inserted, so that IME/input methods still work correctly.
+                this._quick_latex_pending_space = true;
+            }
+        });
+
         this.label_input.listen("input", () => {
+            if (this._quick_latex_pending_space) {
+                this._quick_latex_pending_space = false;
+                ui.load_quick_latex_bindings().then(() => {
+                    if (expand_quick_latex({ keep_trailing_space: true })) {
+                        return;
+                    }
+                });
+            }
             if (!ui.in_mode(UIMode.Command)) {
                 const selection = Array.from(ui.selection).filter((cell) => {
                     return cell.label !== this.label_input.element.value;
@@ -5567,11 +5745,11 @@ class Panel {
                     display_port_pane("export", "base64");
                 })
         ).add(
-          // The embed button.
-          new DOM.Element("button").add("HTML")
-              .listen("click", () => {
-                  display_port_pane("export", "html");
-              })
+            // The embed button.
+            new DOM.Element("button").add("HTML")
+                .listen("click", () => {
+                    display_port_pane("export", "html");
+                })
         ).add(export_to_latex).add(export_to_typst).add(
             new DOM.Div({ class: "indicator-container katex-only" }).add(
                 new DOM.Element("label").add("Macros: ")
