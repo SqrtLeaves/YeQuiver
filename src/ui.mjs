@@ -1,7 +1,7 @@
 import { Arrow, ArrowStyle, CONSTANTS, Label, Shape } from "./arrow.mjs";
 import { CubicBezier } from "./curve.mjs";
 import { cancel, DOM, delay, pointer_event } from "./dom.mjs";
-import { Colour, Dimensions, Enum, Offset, Point, Position, clamp, deg_to_rad, mod, rad_to_deg, url_parameters } from "./ds.mjs";
+import { Colour, Dimensions, Enum, Offset, Point, Position, clamp, deg_to_rad, mod, rad_to_deg, strip_label_hashtab, url_parameters } from "./ds.mjs";
 import { Parser } from "./parser.mjs";
 import { Quiver, QuiverImportExport } from "./quiver.mjs";
 
@@ -4116,18 +4116,13 @@ class Panel {
 
             const cursor_index = raw.indexOf("#cursor");
             if (cursor_index !== -1) {
-                const before_cursor_raw = raw.slice(0, cursor_index);
-                const before_cursor_visible = before_cursor_raw.replace(/#tab/g, "");
-                caret_offset_in_replacement = before_cursor_visible.length;
-                if (caret_offset_in_replacement > 0) {
-                    caret_offset_in_replacement -= 1;
-                }
+                caret_offset_in_replacement = cursor_index;
                 replacement = raw.replace("#cursor", "");
             } else {
                 replacement = raw;
             }
 
-            replacement = replacement.replace(/#tab/g, "");
+            // Keep #tab in the inserted text so that Tab can jump to it later.
 
             if (caret_offset_in_replacement === null) {
                 const brace_index = replacement.indexOf("{}");
@@ -4170,6 +4165,23 @@ class Panel {
         // the input field is modified.
         this.label_input.listen("keydown", (event) => {
             if (event.key === "Tab") {
+                const value = this.label_input.element.value;
+                let caret = this.label_input.element.selectionStart;
+                if (caret != null) {
+                    let i = value.indexOf("#tab", caret);
+                    while (i !== -1) {
+                        if (i === 0 || value[i - 1] !== "\\") {
+                            const new_value = value.slice(0, i) + value.slice(i + 4);
+                            this.label_input.element.value = new_value;
+                            this.label_input.element.setSelectionRange(i, i);
+                            this.label_input.element.dispatchEvent(new Event("input", { bubbles: true }));
+                            event.preventDefault();
+                            event.stopPropagation();
+                            return;
+                        }
+                        i = value.indexOf("#tab", i + 1);
+                    }
+                }
                 ui.load_quick_latex_bindings().then(() => {
                     if (expand_quick_latex({ keep_trailing_space: false })) {
                         event.preventDefault();
@@ -6023,18 +6035,19 @@ class Panel {
                 }
 
                 // If the cell is empty, we highlight it to make it easier to spot.
-                cell.element.class_list.toggle("empty", cell.label.trim() === "");
+                cell.element.class_list.toggle("empty", strip_label_hashtab(cell.label).trim() === "");
             }
         };
 
         const renderer = ui.settings.get("quiver.renderer");
+        const label_for_render = strip_label_hashtab(cell.label);
         switch (renderer) {
             case "katex":
                 // Render the label with KaTeX.
                 // Currently all errors are disabled, so we don't wrap this in a try-catch block.
                 KaTeX.then((katex) => {
                     katex.render(
-                        cell.label.replace(/\$/g, "\\$"),
+                        label_for_render.replace(/\$/g, "\\$"),
                         label.element,
                         {
                             throwOnError: false,
@@ -6058,10 +6071,10 @@ class Panel {
             case "typst":
                 // First, show the raw Typst code as a placeholder. In practice, this will only be
                 // visible when Typst is loading.
-                label.clear().add(new DOM.Element("pre", { "class": "breathe" }).add(cell.label));
+                label.clear().add(new DOM.Element("pre", { "class": "breathe" }).add(label_for_render));
                 update_label_transformation(renderer);
                 // Render the label with Typst. then clause must got a svg(in text), not an error
-                TypstQueue.render(`${cell.label}`).then((result) => {
+                TypstQueue.render(`${label_for_render}`).then((result) => {
                     const template = new DOM.Element("template");
                     template.element.innerHTML = result;
                     const svg = new DOM.Element(template.element.content.firstChild);
@@ -6090,7 +6103,7 @@ class Panel {
                     // Display a malformed label with the `.typst-error` class, like with KaTeX.
                     // This error must be handled outside of the Promise queue, because some visible
                     // hint should be provided for the user.
-                    label.replace(new DOM.Div({ class: "typst-error" }).add(cell.label));
+                    label.replace(new DOM.Div({ class: "typst-error" }).add(label_for_render));
                     update_label_transformation(renderer);
                 });
                 break;

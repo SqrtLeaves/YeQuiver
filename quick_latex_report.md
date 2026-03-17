@@ -16,7 +16,7 @@ The mapping from codes to snippets is not hard-coded: it is loaded from an exter
   - User types a sequence of ASCII letters (the *shorthand key*), e.g. `al`.
   - Expansion is triggered by:
     - Pressing **Space** (after the key): the key is replaced by the snippet, and the trailing space is kept.
-    - Pressing **Tab**: the key is replaced by the snippet, without adding extra whitespace.
+    - Pressing **Tab**: first, if there is a `#tab` after the caret (and not escaped as `\#tab`), the caret moves to that position and that `#tab` is removed (“consumed”); otherwise, the key is replaced by the snippet, without adding extra whitespace.
   - The shorthand key is only recognized when:
     - It is the *final* run of letters immediately before the caret.
     - The character *before* the key (if any) is **not** a letter. This avoids false positives such as the `ta` in `delta`.
@@ -25,9 +25,10 @@ The mapping from codes to snippets is not hard-coded: it is loaded from an exter
 - **Cursor positioning and placeholders**
   - Snippets may use:
     - `#cursor` – the caret will be placed at this position after expansion; the marker itself is removed.
-    - `#tab` – currently removed during expansion (the format is preserved for compatibility, but no extra Tab navigation is implemented yet).
+    - `#tab` – kept in the inserted text. When the user presses **Tab**, if there is a `#tab` after the caret (and not escaped as `\#tab`), the caret jumps to that position and that `#tab` is removed. Thus Tab can be used to step through multiple “tab stops” in a snippet. Escaped as `\#tab` is not treated as a tab stop and is not stripped when rendering.
   - If there is no explicit `#cursor`, but the snippet contains `"{}"`, then the caret is placed *inside* the first occurrence of `{}`.
   - Otherwise, the caret is placed at the **end** of the inserted snippet (plus a trailing space if the trigger was Space).
+  - **Rendering and export:** When drawing labels or exporting (LaTeX/Typst), `#tab` is stripped so it does not appear in the diagram or exported file. The exception is `\#tab`, which is left as-is.
 
 ### Binding file and format
 
@@ -55,7 +56,7 @@ The mapping from codes to snippets is not hard-coded: it is loaded from an exter
 
 ### Implementation details
 
-All changes are in `src/ui.mjs` and a new resource file `src/quick_latex_binding.txt`.
+Relevant code: `src/ui.mjs`, `src/ds.mjs`, `src/quiver.mjs`, and the resource file `src/quick_latex_binding.txt`.
 
 #### UI state and loading
 
@@ -83,15 +84,20 @@ All changes are in `src/ui.mjs` and a new resource file `src/quick_latex_binding
     - For space-triggered expansions, inspects the character before the caret and (if it is a space) temporarily backs the caret up by one for key detection.
     - Extracts the *last* run of `[A-Za-z]+` before the caret; validates that the character before this run is not a letter.
     - Looks up the snippet in `ui.quick_latex_entries`.
-    - If present, computes the replacement string and new caret location according to the rules under “Cursor positioning and placeholders”.
+    - If present, computes the replacement string and new caret location according to the rules under “Cursor positioning and placeholders”. The inserted text keeps `#tab` (no longer stripped during expansion) so that Tab can later jump to and consume each `#tab`.
     - Updates the input element’s value, selection, and dispatches a synthetic `input` event so that existing label update / history logic remains unchanged.
     - Returns `true` if an expansion occurred, otherwise `false`.
+
+- **`#tab` handling (shared):**
+  - `strip_label_hashtab(str)` in `src/ds.mjs`: removes every `#tab` from a string except when escaped as `\#tab` (regex `(?<!\\)#tab`). Used for rendering and export.
+  - **Rendering:** In `src/ui.mjs`, when rendering a cell label (KaTeX or Typst), the label is passed through `strip_label_hashtab` so `#tab` does not appear in the diagram. Empty-cell check uses the stripped label.
+  - **Export:** In `src/quiver.mjs`, both tikz-cd and typst `format_label` helpers strip the label with `strip_label_hashtab` before formatting, so exported output does not contain `#tab`.
 
 - Event wiring on the label input (`this.label_input`):
   - `keydown`:
     - `Tab`:
-      - Calls `ui.load_quick_latex_bindings()` and then `expand_quick_latex({ keep_trailing_space: false })`.
-      - If expansion succeeds, prevents default and stops propagation.
+      - First, looks for a `#tab` after the caret that is not preceded by `\`. If found, removes that `#tab` from the value, sets the caret to that position, dispatches `input`, and prevents default.
+      - Otherwise, calls `ui.load_quick_latex_bindings()` and then `expand_quick_latex({ keep_trailing_space: false })`. If expansion succeeds, prevents default and stops propagation.
     - `" "` (Space):
       - Sets a small flag (`this._quick_latex_pending_space = true`) but does not immediately prevent the event, so the space is still inserted by the browser.
   - `input`:

@@ -1,5 +1,5 @@
 import { delay } from "./dom.mjs";
-import { Colour, Encodable, Point, Position, mod } from "./ds.mjs";
+import { Colour, Encodable, Point, Position, mod, strip_label_hashtab } from "./ds.mjs";
 import { CONSTANTS } from "./arrow.mjs";
 import { Parser } from "./parser.mjs";
 import { Edge, Vertex } from "./ui.mjs";
@@ -441,6 +441,7 @@ QuiverImportExport.tikz_cd = new class extends QuiverImportExport {
         // (label contains [, ], or "). If label is already wrapped in braces (e.g. "{f^{X}}" from
         // a previous export), strip them so we output "f^{X}" not "{f^{X}}".
         const format_label = (label) => {
+            label = strip_label_hashtab(label);
             if (label.includes("\\\\")) {
                 return `\\begin{array}{c} ${label} \\end{array}`;
             }
@@ -1043,7 +1044,10 @@ QuiverExport.fletcher = new class extends QuiverExport {
         // Returns the coördinates of a cell, in the form `(x, y)`.
         const cell_coords = (cell) => `(${cell.position.x}, ${cell.position.y})`;
         // Wrap a label in a content block. If the label text is empty, return an empty string.
-        const format_label = (label) => label === "" ? "" : `[$${label}$]`;
+        const format_label = (label) => {
+            label = strip_label_hashtab(label);
+            return label === "" ? "" : `[$${label}$]`;
+        };
         // Concatenate the arguments into a string that can directly be appended to a function call,
         // ignoring empty strings. If there is no effective argument, returns the empty string.
         const arg_list_to_string = (list) => {

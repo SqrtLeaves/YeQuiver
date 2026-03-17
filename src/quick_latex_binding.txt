@@ -126,4 +126,5 @@ bg:\bigsqcup;
 ]2:\huge[ #cursor \huge];
 ]3:\bigg[ #cursor \big];
 ]1:\big[ #cursor \big];
+test:\alpha#cursor\alpha#tab
 

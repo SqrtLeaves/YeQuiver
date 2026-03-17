@@ -405,3 +405,11 @@ export function url_parameters() {
     }
     return new Map(data);
 }
+
+/// Strip `#tab` from a label string for display/export. Do not strip when escaped as `\#tab`.
+export function strip_label_hashtab(str) {
+    if (typeof str !== "string") {
+        return str;
+    }
+    return str.replace(/(?<!\\)#tab/g, "");
+}
