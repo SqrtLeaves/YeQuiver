@@ -82,7 +82,7 @@ dv:\dashv;
 ss:\subset;
 td:\tilde ;
 ld:\lhd;
-fl:\forall;
+fa:\forall;
 wh:\widehat ;
 ex:\exists;
 red:\textcolor{red}{#cursor} ;
